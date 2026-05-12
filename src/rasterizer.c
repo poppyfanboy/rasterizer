@@ -2,6 +2,16 @@
 
 #include "common.h"
 
+static inline int int_clamp(int value, int min, int max) {
+    if (value <= min) {
+        return min;
+    }
+    if (value >= max) {
+        return max;
+    }
+    return value;
+}
+
 // 32-bit 16.16 fixed point number
 typedef i32 fix16;
 
@@ -19,8 +29,20 @@ static inline fix16 fix16_floor(fix16 value) {
     return value & FIX16_INTEGER_BITS;
 }
 
+static inline fix16 fix16_ceil(fix16 value) {
+    return (value & FIX16_INTEGER_BITS) + ((value & FIX16_FRACTIONAL_BITS) != 0 ? FIX16_ONE : 0);
+}
+
 static inline fix16 fix16_abs(fix16 value) {
     return value >= 0 ? value : -value;
+}
+
+static inline fix16 fix16_min(fix16 left, fix16 right) {
+    return left < right ? left : right;
+}
+
+static inline fix16 fix16_max(fix16 left, fix16 right) {
+    return left > right ? left : right;
 }
 
 static inline fix16 fix16_from_float(f32 value) {
@@ -239,9 +261,7 @@ void draw_line_vertical(
     }
 }
 
-// Loosely based on line rasterization rules from here:
-// https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-rasterizer-stage-rules
-void draw_line(u32 *pixels, int width, int height, f32 start[2], f32 end[2], u32 color) {
+void draw_line_iterative(u32 *pixels, int width, int height, f32 start[2], f32 end[2], u32 color) {
     fix16 x0 = fix16_from_float(start[0]);
     fix16 x1 = fix16_from_float(end[0]);
 
@@ -253,6 +273,161 @@ void draw_line(u32 *pixels, int width, int height, f32 start[2], f32 end[2], u32
     } else {
         draw_line_vertical(pixels, width, height, x0, y0, x1, y1, color);
     }
+}
+
+// Follows line rasterization rules described here:
+// https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-rasterizer-stage-rules
+void draw_line_non_iterative(
+    u32 *pixels, int width, int height,
+    f32 start[2], f32 end[2],
+    u32 color
+) {
+    fix16 x0 = fix16_from_float(start[0]);
+    fix16 x1 = fix16_from_float(end[0]);
+
+    fix16 y0 = fix16_from_float(start[1]);
+    fix16 y1 = fix16_from_float(end[1]);
+
+    // Bias x to the left: a point right between two pixels can only belong to the left one.
+
+    int min_x = fix16_ceil(fix16_min(x0, x1) - FIX16_ONE) / FIX16_ONE;
+    int max_x = fix16_ceil(fix16_max(x0, x1) - FIX16_ONE) / FIX16_ONE;
+
+    if (max_x < 0 || min_x >= width) {
+        return;
+    }
+    min_x = int_clamp(min_x, 0, width - 1);
+    max_x = int_clamp(max_x, 0, width - 1);
+
+    // Bias y to the top: a point right between two pixels can only belong to the top one.
+
+    int min_y = fix16_ceil(fix16_min(y0, y1) - FIX16_ONE) / FIX16_ONE;
+    int max_y = fix16_ceil(fix16_max(y0, y1) - FIX16_ONE) / FIX16_ONE;
+
+    if (max_y < 0 || min_y >= height) {
+        return;
+    }
+    min_y = int_clamp(min_y, 0, height - 1);
+    max_y = int_clamp(max_y, 0, height - 1);
+
+    // Line equation: Ax + By + C = 0
+
+    fix16 dx = x1 - x0;
+    fix16 dy = y1 - y0;
+
+    fix16 A = -dy;
+    fix16 B = dx;
+    fix16 C = fix16_mul(dy, x0) - fix16_mul(dx, y0);
+
+    bool line_is_y_major = fix16_abs(dx) < fix16_abs(dy);
+
+    fix16 x_half_step = fix16_mul(A, FIX16_ONE / 2);
+    fix16 y_half_step = fix16_mul(B, FIX16_ONE / 2);
+
+    for (int bitmap_y = min_y; bitmap_y <= max_y; bitmap_y += 1) {
+        for (int bitmap_x = min_x; bitmap_x <= max_x; bitmap_x += 1) {
+            fix16 x = bitmap_x * FIX16_ONE;
+            fix16 y = bitmap_y * FIX16_ONE;
+
+            // Check where the top/right/bottom/left corners of the "diamond" test area are located
+            // relative to the line.
+
+            fix16 sign_pixel_corner = fix16_mul(A, x) + fix16_mul(B, y) + C;
+
+            fix16 sign_top = sign_pixel_corner + x_half_step;
+            fix16 sign_right = sign_pixel_corner + 2 * x_half_step + y_half_step;
+            fix16 sign_bottom = sign_pixel_corner + x_half_step + 2 * y_half_step;
+            fix16 sign_left = sign_pixel_corner + y_half_step;
+
+            // The diamond area is fully contained within one of the half-planes.
+
+            if (sign_top > 0 && sign_right > 0 && sign_bottom > 0 && sign_left > 0) {
+                continue;
+            }
+            if (sign_top < 0 && sign_right < 0 && sign_bottom < 0 && sign_left < 0) {
+                continue;
+            }
+
+            bool pixel_contains_start_point =
+                (x < x0 && x0 <= x + FIX16_ONE) &&
+                (y < y0 && y0 <= y + FIX16_ONE);
+
+            bool pixel_contains_end_point =
+                (x < x1 && x1 <= x + FIX16_ONE) &&
+                (y < y1 && y1 <= y + FIX16_ONE);
+
+            // Most common case: line endpoints are somewhere far away and all we need to check is
+            // whether a line goes through the diamond area.
+
+            if (!pixel_contains_start_point && !pixel_contains_end_point) {
+                if (sign_top != 0 || sign_right != 0 || sign_bottom != 0 || sign_left != 0) {
+                    pixels[bitmap_y * width + bitmap_x] = color;
+                }
+
+                if (sign_bottom == 0 || (line_is_y_major && sign_right == 0)) {
+                    pixels[bitmap_y * width + bitmap_x] = color;
+                }
+
+                continue;
+            }
+
+            // More precise checks for when the current pixel contains one of the line endpoints.
+
+            bool diamond_contains_start_point =
+                fix16_abs(x0 - x - FIX16_ONE / 2) + (y0 - y) - FIX16_ONE <= 0 &&
+                fix16_abs(x0 - x - FIX16_ONE / 2) - (y0 - y) < 0;
+
+            bool diamond_contains_end_point = 
+                fix16_abs(x1 - x - FIX16_ONE / 2) + (y1 - y) - FIX16_ONE <= 0 &&
+                fix16_abs(x1 - x - FIX16_ONE / 2) - (y1 - y) < 0;
+
+            if (line_is_y_major) {
+                diamond_contains_start_point =
+                    diamond_contains_start_point ||
+                    x0 == x + FIX16_ONE && y0 == y + FIX16_ONE / 2;
+
+                diamond_contains_end_point =
+                    diamond_contains_end_point ||
+                    x1 == x + FIX16_ONE && y1 == y + FIX16_ONE / 2;
+            }
+
+            // The line needs to exit the diamond area for a pixel to get filled.
+            if (diamond_contains_end_point) {
+                continue;
+            }
+
+            // Given that the line ending point is not inside of the diamond area, this means that
+            // if the starting point is contained inside of a diamond area, the line definitely went
+            // through it and left it.
+            if (diamond_contains_start_point) {
+                pixels[bitmap_y * width + bitmap_x] = color;
+                continue;
+            }
+
+            // Both endpoints of the line are contained within a single pixel and neither of them
+            // are inside the diamond area. Check if the endpoints are contained within different
+            // "corners" of the pixel to decide whether the line crosses the diamond area.
+            if (line_is_y_major) {
+                if (
+                    y0 < y + FIX16_ONE / 2 && y1 > y + FIX16_ONE / 2 ||
+                    y1 < y + FIX16_ONE / 2 && y0 > y + FIX16_ONE / 2
+                ) {
+                    pixels[bitmap_y * width + bitmap_x] = color;
+                }
+            } else {
+                if (
+                    x0 < x + FIX16_ONE / 2 && x1 > x + FIX16_ONE / 2 ||
+                    x1 < x + FIX16_ONE / 2 && x0 > x + FIX16_ONE / 2
+                ) {
+                    pixels[bitmap_y * width + bitmap_x] = color;
+                }
+            }
+        }
+    }
+}
+
+void draw_line(u32 *pixels, int width, int height, f32 start[2], f32 end[2], u32 color) {
+    draw_line_non_iterative(pixels, width, height, start, end, color);
 }
 
 void render_lines(u32 *pixels, int width, int height, f64 time) {
