@@ -275,8 +275,7 @@ void draw_line_iterative(u32 *pixels, int width, int height, f32 start[2], f32 e
     }
 }
 
-// Follows line rasterization rules described here:
-// https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-rasterizer-stage-rules
+// Follows DirectX line rasterization rules.
 void draw_line_non_iterative(
     u32 *pixels, int width, int height,
     f32 start[2], f32 end[2],
@@ -321,9 +320,6 @@ void draw_line_non_iterative(
 
     bool line_is_y_major = fix16_abs(dx) < fix16_abs(dy);
 
-    fix16 x_half_step = fix16_mul(A, FIX16_ONE / 2);
-    fix16 y_half_step = fix16_mul(B, FIX16_ONE / 2);
-
     for (int bitmap_y = min_y; bitmap_y <= max_y; bitmap_y += 1) {
         for (int bitmap_x = min_x; bitmap_x <= max_x; bitmap_x += 1) {
             fix16 x = bitmap_x * FIX16_ONE;
@@ -332,21 +328,28 @@ void draw_line_non_iterative(
             // Check where the top/right/bottom/left corners of the "diamond" test area are located
             // relative to the line.
 
-            fix16 sign_pixel_corner = fix16_mul(A, x) + fix16_mul(B, y) + C;
+            fix16 sign_top = fix16_mul(A, x + FIX16_ONE / 2) + fix16_mul(B, y) + C;
+            fix16 sign_right = fix16_mul(A, x + FIX16_ONE) + fix16_mul(B, y + FIX16_ONE / 2) + C;
+            fix16 sign_bottom = fix16_mul(A, x + FIX16_ONE / 2) + fix16_mul(B, y + FIX16_ONE) + C;
+            fix16 sign_left = fix16_mul(A, x) + fix16_mul(B, y + FIX16_ONE / 2) + C;
 
-            fix16 sign_top = sign_pixel_corner + x_half_step;
-            fix16 sign_right = sign_pixel_corner + 2 * x_half_step + y_half_step;
-            fix16 sign_bottom = sign_pixel_corner + x_half_step + 2 * y_half_step;
-            fix16 sign_left = sign_pixel_corner + y_half_step;
+            // Check if the line goes through the diamond when extended to infinity.
 
-            // The diamond area is fully contained within one of the half-planes.
-
-            if (sign_top > 0 && sign_right > 0 && sign_bottom > 0 && sign_left > 0) {
+            bool extended_line_intersects_with_diamond = false;
+            if (
+                (sign_top > 0 || sign_right > 0 || sign_bottom > 0 || sign_left > 0) &&
+                (sign_top < 0 || sign_right < 0 || sign_bottom < 0 || sign_left < 0)
+            ) {
+                extended_line_intersects_with_diamond = true;
+            }
+            if (sign_bottom == 0 || (line_is_y_major && sign_right == 0)) {
+                extended_line_intersects_with_diamond = true;
+            }
+            if (!extended_line_intersects_with_diamond) {
                 continue;
             }
-            if (sign_top < 0 && sign_right < 0 && sign_bottom < 0 && sign_left < 0) {
-                continue;
-            }
+
+            // Then act depending on where we are on the line relative to its endpoints.
 
             bool pixel_contains_start_point =
                 (x < x0 && x0 <= x + FIX16_ONE) &&
@@ -356,22 +359,15 @@ void draw_line_non_iterative(
                 (x < x1 && x1 <= x + FIX16_ONE) &&
                 (y < y1 && y1 <= y + FIX16_ONE);
 
-            // Most common case: line endpoints are somewhere far away and all we need to check is
-            // whether a line goes through the diamond area.
+            // Most common case: we are somewhere in the middle of the line (and we already know
+            // that the line intersects the diamond area of the pixel we are deciding to fill).
 
             if (!pixel_contains_start_point && !pixel_contains_end_point) {
-                if (sign_top != 0 || sign_right != 0 || sign_bottom != 0 || sign_left != 0) {
-                    pixels[bitmap_y * width + bitmap_x] = color;
-                }
-
-                if (sign_bottom == 0 || (line_is_y_major && sign_right == 0)) {
-                    pixels[bitmap_y * width + bitmap_x] = color;
-                }
-
+                pixels[bitmap_y * width + bitmap_x] = color;
                 continue;
             }
 
-            // More precise checks for when the current pixel contains one of the line endpoints.
+            // Rare case: the current pixel contains one of the line endpoints.
 
             bool diamond_contains_start_point =
                 fix16_abs(x0 - x - FIX16_ONE / 2) + (y0 - y) - FIX16_ONE <= 0 &&
@@ -391,22 +387,24 @@ void draw_line_non_iterative(
                     x1 == x + FIX16_ONE && y1 == y + FIX16_ONE / 2;
             }
 
-            // The line needs to exit the diamond area for a pixel to get filled.
+            // Never fill the ending pixel if the line reached the ending point before it managed to
+            // leave the diamond area.
             if (diamond_contains_end_point) {
                 continue;
             }
 
-            // Given that the line ending point is not inside of the diamond area, this means that
-            // if the starting point is contained inside of a diamond area, the line definitely went
-            // through it and left it.
+            // Fill the starting pixel when the starting point is inside of the diamond and the line
+            // managed to leave the diamond area.
             if (diamond_contains_start_point) {
                 pixels[bitmap_y * width + bitmap_x] = color;
                 continue;
             }
 
-            // Both endpoints of the line are contained within a single pixel and neither of them
-            // are inside the diamond area. Check if the endpoints are contained within different
-            // "corners" of the pixel to decide whether the line crosses the diamond area.
+            // Otherwise the line either went through the diamond or it stopped at the ending point
+            // and didn't reach the diamond.
+            //
+            // To decide what happened exactly we just need to check if the starting and the ending
+            // point are positioned on the opposite sides relative to the current pixel center.
             if (line_is_y_major) {
                 if (
                     y0 < y + FIX16_ONE / 2 && y1 > y + FIX16_ONE / 2 ||
@@ -446,20 +444,20 @@ void render_lines(u32 *pixels, int width, int height, f64 time) {
         );
         draw_line(
             pixels, width, height,
-            (f32[]){ top_left[0], top_left[1] + rectangle_height },
-            (f32[]){ top_left[0] + rectangle_width, top_left[1] + rectangle_height },
-            0xffff00
-        );
-        draw_line(
-            pixels, width, height,
-            (f32[]){ top_left[0], top_left[1] },
-            (f32[]){ top_left[0], top_left[1] + rectangle_height },
-            0xffff00
-        );
-        draw_line(
-            pixels, width, height,
             (f32[]){ top_left[0] + rectangle_width, top_left[1] },
             (f32[]){ top_left[0] + rectangle_width, top_left[1] + rectangle_height },
+            0xffff00
+        );
+        draw_line(
+            pixels, width, height,
+            (f32[]){ top_left[0] + rectangle_width, top_left[1] + rectangle_height },
+            (f32[]){ top_left[0], top_left[1] + rectangle_height },
+            0xffff00
+        );
+        draw_line(
+            pixels, width, height,
+            (f32[]){ top_left[0], top_left[1] + rectangle_height },
+            (f32[]){ top_left[0], top_left[1] },
             0xffff00
         );
     }
@@ -501,6 +499,113 @@ void render_lines(u32 *pixels, int width, int height, f64 time) {
         draw_line(pixels, width, height, start, center, 0x29adff);
         draw_line(pixels, width, height, center, end, 0xffec27);
         draw_line(pixels, width, height, start, end, 0xff77a8);
+    }
+}
+
+void render_rasterization_rules_test_for_lines(u32 *pixels, int width, int height, f64 time) {
+    clear_screen(pixels, width, height, (f32[]){ 0.1F, 0.1F, 0.1F });
+
+    f32 top_left[2] = { 100, 100 };
+
+    // Important to go in either CCW or CW order for all the corners to get filled.
+    draw_line_non_iterative(
+        pixels, width, height,
+        (f32[]){ top_left[0] - 0.5F, top_left[1] - 0.5F },
+        (f32[]){ (top_left[0] - 0.5F) + 17, top_left[1] - 0.5F },
+        0x404040
+    );
+    draw_line_non_iterative(
+        pixels, width, height,
+        (f32[]){ (top_left[0] - 0.5F) + 17, top_left[1] - 0.5F },
+        (f32[]){ (top_left[0] - 0.5F) + 17, (top_left[1] - 0.5F) + 17 },
+        0x404040
+    );
+    draw_line_non_iterative(
+        pixels, width, height,
+        (f32[]){ (top_left[0] - 0.5F) + 17, (top_left[1] - 0.5F) + 17 },
+        (f32[]){ top_left[0] - 0.5F, (top_left[1] - 0.5F) + 17 },
+        0x404040
+    );
+    draw_line_non_iterative(
+        pixels, width, height,
+        (f32[]){ top_left[0] - 0.5F, (top_left[1] - 0.5F) + 17 },
+        (f32[]){ top_left[0] - 0.5F, top_left[1] - 0.5F },
+        0x404040
+    );
+
+    // The lines are from this image:
+    // https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-rasterizer-stage-rules#line-rasterization-rules-aliased-without-multisampling
+
+    f32 lines[][2][2] = {
+        { { 0.5F, 0.5F }, { 1.5F, 0.75F } },
+        { { 0.5F, 6.0F }, { 2.5F, 4.0F } },
+        { { 1.0F, 9.5F }, { 3.0F, 7.5F } },
+        { { 1.0F, 11.5F }, { 3.0F, 9.5F } },
+        { { 1.5F, 2.75F }, { 0.5F, 2.5F } },
+        { { 2.5F, 4.0F }, { 4.5F, 6.0F } },
+        { { 2.5F, 12.0F }, { 4.5F, 14.0F } },
+        { { 2.5F, 14.0F }, { 0.5F, 16.0F } },
+        { { 3.0F, 7.5F }, { 5.0F, 9.5F } },
+        { { 3.5F, 15.0F }, { 4.0F, 14.5F } },
+        { { 3.5F, 16.0F }, { 3.5F, 15.F } },
+        { { 3.75F, -0.2F }, { 3.8F, 1.1F } },
+        { { 4.0F, 2.5F }, { 8.5F, 4.0F } },
+        { { 4.0F, 10.5F }, { 6.0F, 12.5F } },
+        { { 6.0F, 0.5F }, { 6.1F, 0.8F } },
+        { { 6.0F, 4.5F }, { 6.0F, 5.5F } },
+        { { 6.0F, 5.5F }, { 6.0F, 6.5F } },
+        { { 6.5F, 8.0F }, { 8.5F, 10.0F } },
+        { { 7.0F, 13.5F }, { 5.0F, 15.5F } },
+        { { 7.5F, 1.0F }, { 7.75F, 0.8F } },
+        { { 8.0F, 12.5F }, { 9.0F, 12.5F } },
+        { { 8.0F, 14.5F }, { 10.0F, 14.5F } },
+        { { 8.5F, 10.0F }, { 6.5F, 12.0F } },
+        { { 9.0F, 11.5F }, { 8.0F, 11.5F } },
+        { { 9.25F, 0.75F }, { 9.25F, 1.25F } },
+        { { 10.0F, 9.5F }, { 12.0F, 11.5F } },
+        { { 10.0F, 14.5F }, { 11.0F, 15.5F } },
+        { { 10.5F, 2.0F }, { 9.0F, 6.5F } },
+        { { 10.5F, 8.0F }, { 9.5F, 8.0F } },
+        { { 11.5F, 8.0F }, { 10.5F, 8.0F } },
+        { { 11.75F, 0.75F }, { 11.75F, 1.25F } },
+        { { 12.0F, 11.5F }, { 10.0F, 13.5F } },
+        { { 12.25F, 1.4F }, { 12.25F, 1.4F } },
+        { { 12.1F, 3.2F }, { 12.25F, 3.2F } },
+        { { 12.8F, 3.2F }, { 12.95F, 3.2F } },
+        { { 12.3F, 3.3F }, { 12.5F, 3.3F }, },
+        { { 12.6F, 3.3F }, { 12.6F, 3.6F }, },
+        { { 12.1F, 3.7F }, { 12.1F, 3.9F }, },
+        { { 12.9F, 3.7F }, { 12.9F, 3.9F }, },
+        { { 12.5F, 6.0F }, { 13.0F, 5.5F } },
+        { { 12.5F, 15.0F }, { 12.0F, 15.0F } },
+        { { 13.0F, 9.5F }, { 12.5F, 9.0F } },
+        { { 13.125F, 0.375F }, { 13.375F, 0.125F } },
+        { { 13.375F, 1.875F }, { 13.125F, 1.625F } },
+        { { 13.5F, 7.0F }, { 13.5F, 6.0F } },
+        { { 13.5F, 9.0F }, { 13.5F, 10.0F } },
+        { { 13.5F, 16.0F }, { 12.5F, 15.0F } },
+        { { 14.0F, 4.5F }, { 14.5F, 5.0F } },
+        { { 14.1F, 10.8F }, { 12.3F, 13.9F } },
+        { { 14.25F, 0.1F }, { 14.75F, 0.1F } },
+        { { 14.25F, 3.25F }, { 13.8F, 2.8F } },
+        { { 14.625F, 3.125F }, { 15.125F, 3.375F } },
+        { { 15.0F, 8.5F }, { 15.5F, 8.0F } },
+        { { 15.2F, 2.8F }, { 14.8F, 2.8F } },
+        { { 15.5F, 6.0F }, { 15.0F, 6.5F } },
+        { { 15.625F, 0.125F }, { 15.875F, 0.375F } },
+        { { 15.875F, 1.625F }, { 15.625F, 1.875F } },
+        { { 15.8F, 3.2F }, { 15.8F, 2.8F } },
+        { { 15.8F, 14.2F }, { 15.1F, 15.5F } },
+        { { 16.1F, 10.8F }, { 14.0F, 14.5F } },
+    };
+
+    for (int i = 0; i < sizeof(lines) / sizeof(lines[0]); i += 1) {
+        draw_line_non_iterative(
+            pixels, width, height,
+            (f32[]){ top_left[0] + lines[i][0][0], top_left[1] + lines[i][0][1] },
+            (f32[]){ top_left[0] + lines[i][1][0], top_left[1] + lines[i][1][1] },
+            0xffffff
+        );
     }
 }
 
