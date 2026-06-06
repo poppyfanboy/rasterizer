@@ -1,9 +1,10 @@
-#include "common.h"
-#include "rasterizer.c"
+#include "examples.c"
 
+#define UNICODE
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+// WIN32_LEAN_AND_MEAN excludes Windows Multimedia functions.
 __declspec(dllimport) unsigned int __stdcall timeBeginPeriod(unsigned int);
 __declspec(dllimport) unsigned int __stdcall timeEndPeriod(unsigned int);
 
@@ -14,9 +15,13 @@ __declspec(dllimport) unsigned int __stdcall timeEndPeriod(unsigned int);
 
 #define LOG_ERROR(...)
 
-DWORD main_thread_id;
-HANDLE window_created_event;
-HANDLE window_handle = NULL;
+typedef struct {
+    DWORD main_thread_id;
+    HANDLE window_created_event;
+    HANDLE window_handle;
+} PlatformState;
+
+PlatformState platform = {0};
 
 LRESULT CALLBACK window_procedure(
     HWND window_handle,
@@ -38,7 +43,7 @@ LRESULT CALLBACK window_procedure(
         // Forward any messages of interest back to the main thread.
         case WM_DESTROY:
         case WM_SIZE: {
-            PostThreadMessage(main_thread_id, message, w_parameter, l_parameter);
+            PostThreadMessage(platform.main_thread_id, message, w_parameter, l_parameter);
             result = 0;
         } break;
 
@@ -67,12 +72,12 @@ DWORD WINAPI event_loop_procedure(LPVOID parameter) {
 
     DWORD window_style = WS_OVERLAPPEDWINDOW;
 
-    RECT window_rectangle = {0, 0, WINDOW_WIDTH, WINDOW_HEIGHT};
+    RECT window_rectangle = { 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT };
     AdjustWindowRect(&window_rectangle, window_style, false);
     int window_width = window_rectangle.right - window_rectangle.left;
     int window_height = window_rectangle.bottom - window_rectangle.top;
 
-    window_handle = CreateWindowEx(
+    platform.window_handle = CreateWindowEx(
         0,
         window_class.lpszClassName,
         L"Rasterizer",
@@ -85,13 +90,13 @@ DWORD WINAPI event_loop_procedure(LPVOID parameter) {
         NULL
     );
 
-    SetEvent(window_created_event);
-    if (window_handle == NULL) {
+    SetEvent(platform.window_created_event);
+    if (platform.window_handle == NULL) {
         return 1;
     }
 
     MSG message;
-    while (GetMessage(&message, window_handle, 0, 0)) {
+    while (GetMessage(&message, platform.window_handle, 0, 0)) {
         TranslateMessage(&message);
         DispatchMessage(&message);
     }
@@ -175,8 +180,8 @@ int WINAPI WinMain(
     timeBeginPeriod(1);
     SetProcessDPIAware();
 
-    main_thread_id = GetCurrentThreadId();
-    window_created_event = CreateEvent(NULL, true, false, NULL);
+    platform.main_thread_id = GetCurrentThreadId();
+    platform.window_created_event = CreateEvent(NULL, true, false, NULL);
 
     HANDLE event_loop_thread_handle = CreateThread(NULL, 0, event_loop_procedure, NULL, 0, NULL);
     if (event_loop_thread_handle == NULL) {
@@ -184,14 +189,14 @@ int WINAPI WinMain(
         return 1;
     }
 
-    WaitForSingleObject(window_created_event, INFINITE);
-    if (window_handle == NULL) {
+    WaitForSingleObject(platform.window_created_event, INFINITE);
+    if (platform.window_handle == NULL) {
         LOG_ERROR(Windows, "Event handling thread failed to create a window");
         return 1;
     }
 
     RECT window_rectangle;
-    GetClientRect(window_handle, &window_rectangle);
+    GetClientRect(platform.window_handle, &window_rectangle);
     int window_width = window_rectangle.right - window_rectangle.left;
     int window_height = window_rectangle.bottom - window_rectangle.top;
 
@@ -201,10 +206,12 @@ int WINAPI WinMain(
         return 1;
     }
 
-    ShowWindow(window_handle, SW_SHOW);
-    UpdateWindow(window_handle);
-    SetForegroundWindow(window_handle);
-    SetFocus(window_handle);
+    ShowWindow(platform.window_handle, SW_SHOW);
+    UpdateWindow(platform.window_handle);
+    SetForegroundWindow(platform.window_handle);
+    SetFocus(platform.window_handle);
+
+    Rasterizer *rasterizer = initialize();
 
     LARGE_INTEGER timer_frequency;
     QueryPerformanceFrequency(&timer_frequency);
@@ -214,8 +221,10 @@ int WINAPI WinMain(
     QueryPerformanceCounter(&created_time);
     LARGE_INTEGER previous_frame_end_time = created_time;
 
-    bool window_should_close = false;
+    f64 time = 0;
+    f64 delta_time = 0;
 
+    bool window_should_close = false;
     while (!window_should_close) {
         MSG message;
         while (PeekMessage(&message, NULL, 0, 0, PM_REMOVE)) {
@@ -231,12 +240,9 @@ int WINAPI WinMain(
             }
         }
 
-        f64 time = previous_frame_end_time.QuadPart - created_time.QuadPart;
-        time /= timer_frequency.QuadPart;
-
         bitmap_resize(&bitmap, window_width, window_height);
-        render(bitmap.pixels, bitmap.width, bitmap.height, time);
-        bitmap_display(&bitmap, window_handle);
+        render(rasterizer, bitmap.pixels, bitmap.width, bitmap.height, time, delta_time);
+        bitmap_display(&bitmap, platform.window_handle);
 
         LARGE_INTEGER current_time;
         QueryPerformanceCounter(&current_time);
@@ -262,6 +268,12 @@ int WINAPI WinMain(
                 }
             }
         }
+
+        time = current_time.QuadPart - created_time.QuadPart;
+        time /= timer_frequency.QuadPart;
+
+        delta_time = current_time.QuadPart - previous_frame_end_time.QuadPart;
+        delta_time /= timer_frequency.QuadPart;
 
         previous_frame_end_time = current_time;
     }

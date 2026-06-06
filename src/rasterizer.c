@@ -1,70 +1,274 @@
 #include <math.h>
 
-#include "common.h"
+#include <stdbool.h>
+#include <stdint.h>
 
-static inline int int_clamp(int value, int min, int max) {
-    if (value <= min) {
-        return min;
-    }
-    if (value >= max) {
-        return max;
-    }
-    return value;
-}
+typedef uint8_t u8;
+typedef int32_t i32;
+typedef uint32_t u32;
+typedef int64_t i64;
 
-// 32-bit 16.16 fixed point number
-typedef i32 fix16;
+typedef ptrdiff_t isize;
 
-#define FIX16_ONE 0x00010000
-#define FIX16_FRACTIONAL_BITS 0x0000ffff
-#define FIX16_INTEGER_BITS (~FIX16_FRACTIONAL_BITS)
+typedef float f32;
+typedef double f64;
 
-static inline fix16 fix16_mul(fix16 left, fix16 right) {
-    i64 product = (i64)left * right;
-    // Do the rounding using the most significant bit from the part which is getting shifted out.
-    return (product >> 16) + ((product & FIX16_FRACTIONAL_BITS) >> 15);
-}
+#define ARRAY_COUNT(array) ((isize)sizeof(array) / (isize)sizeof((array)[0]))
 
-static inline fix16 fix16_floor(fix16 value) {
-    return value & FIX16_INTEGER_BITS;
-}
+#define PI 3.14159265358979323846
 
-static inline fix16 fix16_ceil(fix16 value) {
-    return (value & FIX16_INTEGER_BITS) + ((value & FIX16_FRACTIONAL_BITS) != 0 ? FIX16_ONE : 0);
-}
-
-static inline fix16 fix16_abs(fix16 value) {
-    return value >= 0 ? value : -value;
-}
-
-static inline fix16 fix16_min(fix16 left, fix16 right) {
-    return left < right ? left : right;
-}
-
-static inline fix16 fix16_max(fix16 left, fix16 right) {
+static inline int int_max(int left, int right) {
     return left > right ? left : right;
 }
 
-static inline fix16 fix16_from_float(f32 value) {
-    // Add 0.5, so that after truncation the value gets effectively rounded.
-    return (value * FIX16_ONE) + (value >= 0 ? 0.5F : -0.5F);
+// 32-bit 24.8 fixed point number.
+//
+// Let's say we want to support resolutions up to 2048x2048. This means the integer part precision
+// has to be at least 11 bits.
+//
+// We need enough precision to store the result of (x0 * dy - y0 * dx), which might require
+// 2p+1 = 2*11 + 1 = 23 bits in the worst case. What's left out of 32 bits is 8 bits for the
+// fractional part and 1 bit for the sign.
+
+typedef i32 fix8;
+
+#define FIX8_PRECISION 8
+#define FIX8_ONE (1 << FIX8_PRECISION)
+
+#define FIX8_FRACTIONAL_BITS (FIX8_ONE - 1)
+#define FIX8_INTEGER_BITS (~FIX8_FRACTIONAL_BITS)
+
+static inline fix8 fix8_mul(fix8 left, fix8 right) {
+    i64 product = (i64)left * (i64)right;
+
+    // Do the rounding using the most significant bit from the part which is getting shifted out.
+    return
+        (product >> FIX8_PRECISION) +
+        ((product & FIX8_FRACTIONAL_BITS) >> (FIX8_PRECISION - 1));
 }
 
-void clear_screen(u32 *pixels, int width, int height, f32 color[3]) {
-    u32 color_packed =
-        (u32)(color[0] * 255) << 16 |
-        (u32)(color[1] * 255) << 8 |
-        (u32)(color[2] * 255);
+static inline fix8 fix8_floor(fix8 value) {
+    return value & FIX8_INTEGER_BITS;
+}
 
-    for (int i = 0; i < width * height; i += 1) {
-        pixels[i] = color_packed;
+static inline fix8 fix8_ceil(fix8 value) {
+    return (value & FIX8_INTEGER_BITS) + ((value & FIX8_FRACTIONAL_BITS) != 0 ? FIX8_ONE : 0);
+}
+
+static inline fix8 fix8_abs(fix8 value) {
+    return value >= 0 ? value : -value;
+}
+
+static inline fix8 fix8_min(fix8 left, fix8 right) {
+    return left < right ? left : right;
+}
+
+static inline fix8 fix8_max(fix8 left, fix8 right) {
+    return left > right ? left : right;
+}
+
+static inline fix8 fix8_from_float(f32 value) {
+    // Add 0.5, so that after truncation the value gets effectively rounded.
+    return (value * FIX8_ONE) + (value >= 0 ? 0.5F : -0.5F);
+}
+
+#define X 0
+#define Y 1
+#define Z 2
+#define W 3
+
+#define R 0
+#define G 1
+#define B 2
+#define A 3
+
+static inline f64 degrees_to_radians(f64 degrees) {
+    return degrees / 180 * PI;
+}
+
+static inline void f32x2_copy(f32 const source[2], f32 dest[2]) {
+    dest[0] = source[0];
+    dest[1] = source[1];
+}
+
+static inline void f32x2_add(f32 const left[2], f32 const right[2], f32 result[2]) {
+    result[0] = left[0] + right[0];
+    result[1] = left[1] + right[1];
+}
+
+static inline void f32x2_sub(f32 const left[2], f32 const right[2], f32 result[2]) {
+    result[0] = left[0] - right[0];
+    result[1] = left[1] - right[1];
+}
+
+static inline f32 *f32x2_scale(f32 vector[2], f32 scalar) {
+    vector[0] *= scalar;
+    vector[1] *= scalar;
+    return vector;
+}
+
+static inline f32 *f32x2_add_assign(f32 left[2], f32 const right[2]) {
+    f32x2_add(left, right, left);
+    return left;
+}
+
+static inline void f32x3_copy(f32 const source[3], f32 dest[3]) {
+    dest[0] = source[0];
+    dest[1] = source[1];
+    dest[2] = source[2];
+}
+
+static inline f32 f32x3_dot(f32 const left[3], f32 const right[3]) {
+    return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+}
+
+static inline void f32x3_add(f32 const left[3], f32 const right[3], f32 result[3]) {
+    result[0] = left[0] + right[0];
+    result[1] = left[1] + right[1];
+    result[2] = left[2] + right[2];
+}
+
+static inline f32 *f32x3_add_assign(f32 left[3], f32 const right[3]) {
+    f32x3_add(left, right, left);
+    return left;
+}
+
+static inline f32 *f32x3_scale(f32 vector[3], f32 scalar) {
+    vector[0] *= scalar;
+    vector[1] *= scalar;
+    vector[2] *= scalar;
+    return vector;
+}
+
+static inline void f32x3_normalize(f32 vector[3]) {
+    f32 length = sqrtf(f32x3_dot(vector, vector));
+    vector[0] /= length;
+    vector[1] /= length;
+    vector[2] /= length;
+}
+
+static inline void f32x4_copy(f32 const source[4], f32 dest[4]) {
+    dest[0] = source[0];
+    dest[1] = source[1];
+    dest[2] = source[2];
+    dest[3] = source[3];
+}
+
+static inline f32 f32x4_dot(f32 const left[4], f32 const right[4]) {
+    return left[0] * right[0] + left[1] * right[1] + left[2] * right[2] + left[3] * right[3];
+}
+
+static inline void f32x4_normalize(f32 vector[4]) {
+    f32 length = sqrtf(f32x4_dot(vector, vector));
+    vector[0] /= length;
+    vector[1] /= length;
+    vector[2] /= length;
+    vector[3] /= length;
+}
+
+void f32x3x3_mul_vector(f32 const matrix[3][3], f32 const vector[3], f32 result[3]) {
+    f32 temp[3];
+    temp[0] = f32x3_dot(matrix[0], vector);
+    temp[1] = f32x3_dot(matrix[1], vector);
+    temp[2] = f32x3_dot(matrix[2], vector);
+
+    f32x3_copy(temp, result);
+}
+
+static inline void quaternion_identity(f32 quaternion[4]) {
+    quaternion[X] = 0;
+    quaternion[Y] = 0;
+    quaternion[Z] = 0;
+    quaternion[W] = 1;
+}
+
+static inline void quaternion_from_vector(f32 const vector[3], f32 quaternion[4]) {
+    quaternion[X] = vector[X];
+    quaternion[Y] = vector[Y];
+    quaternion[Z] = vector[Z];
+    quaternion[W] = 0;
+}
+
+static inline void quaternion_from_axis_angle(f32 const axis[3], f32 angle, f32 result[4]) {
+    f32 sine = sinf(angle / 2);
+    f32 cosine = cosf(angle / 2);
+
+    result[X] = sine * axis[X];
+    result[Y] = sine * axis[Y];
+    result[Z] = sine * axis[Z];
+    result[W] = cosine;
+}
+
+static inline void quaternion_multiply(f32 const left[4], f32 const right[4], f32 result[4]) {
+    f32 temp[4];
+    temp[X] = left[W] * right[X] + left[X] * right[W] + left[Y] * right[Z] - left[Z] * right[Y];
+    temp[Y] = left[W] * right[Y] - left[X] * right[Z] + left[Y] * right[W] + left[Z] * right[X];
+    temp[Z] = left[W] * right[Z] + left[X] * right[Y] - left[Y] * right[X] + left[Z] * right[W];
+    temp[W] = left[W] * right[W] - left[X] * right[X] - left[Y] * right[Y] - left[Z] * right[Z];
+
+    f32x4_copy(temp, result);
+}
+
+static inline void quaternion_conjugate(f32 const quaternion[4], f32 result[4]) {
+    result[X] = -quaternion[X];
+    result[Y] = -quaternion[Y];
+    result[Z] = -quaternion[Z];
+    result[W] = quaternion[W];
+}
+
+// The "quaternion" parameter is expected to be a unit quaternion.
+static inline void quaternion_rotate(f32 vector[3], f32 const quaternion[4]) {
+    f32 quaternion_conjugated[4];
+    quaternion_conjugate(quaternion, quaternion_conjugated);
+
+    f32 result[4];
+    quaternion_from_vector(vector, result);
+    quaternion_multiply(quaternion, result, result);
+    quaternion_multiply(result, quaternion_conjugated, result);
+
+    f32x3_copy(result, vector);
+}
+
+static inline u32 rgb_to_u32(f32 color[3]) {
+    u32 result = 0;
+    result |= (u32)(color[R] * 255) << 16;
+    result |= (u32)(color[G] * 255) << 8;
+    result |= (u32)(color[B] * 255);
+
+    return result;
+}
+
+// https://en.wikipedia.org/wiki/HSL_and_HSV#HSV_to_RGB
+// Domain: hue ∈ [0°..360°), saturation ∈ [0..1], value ∈ [0..1]
+void hsv_to_rgb(f32 const hsv[3], f32 rgb[3]) {
+    f32 h_chunk = hsv[0] / 60;
+    f32 s = hsv[1];
+    f32 v = hsv[2];
+
+    f32 c = v * s;
+    f32 x = c * (1 - fabsf(fmodf(h_chunk, 2) - 1));
+
+    if (h_chunk < 1) {
+        f32x3_copy((f32[]){ c, x, 0 }, rgb);
+    } else if (h_chunk < 2) {
+        f32x3_copy((f32[]){ x, c, 0 }, rgb);
+    } else if (h_chunk < 3) {
+        f32x3_copy((f32[]){ 0, c, x }, rgb);
+    } else if (h_chunk < 4) {
+        f32x3_copy((f32[]){ 0, x, c }, rgb);
+    } else if (h_chunk < 5) {
+        f32x3_copy((f32[]){ x, 0, c }, rgb);
+    } else {
+        f32x3_copy((f32[]){ c, 0, x }, rgb);
     }
+
+    f32 m = v - c;
+    f32x3_add_assign(rgb, (f32[]){ m, m, m });
 }
 
 void draw_line_horizontal(
     u32 *pixels, int width, int height,
-    fix16 x0, fix16 y0,
-    fix16 x1, fix16 y1,
+    fix8 x0, fix8 y0, fix8 x1, fix8 y1,
     u32 color
 ) {
     // All the math is done as if the gradient is positive.
@@ -74,18 +278,18 @@ void draw_line_horizontal(
     int direction_y = y0 < y1 ? 1 : -1;
 
     if (x0 > x1) {
-        fix16 x0_fract = x0 - fix16_floor(x0);
-        fix16 mirrored_x0 = fix16_floor(x0) + (FIX16_ONE - x0_fract - 1);
-        fix16 mirrored_x1 = mirrored_x0 + (x0 - x1);
+        fix8 x0_fract = x0 - fix8_floor(x0);
+        fix8 mirrored_x0 = fix8_floor(x0) + (FIX8_ONE - x0_fract - 1);
+        fix8 mirrored_x1 = mirrored_x0 + (x0 - x1);
 
         x0 = mirrored_x0;
         x1 = mirrored_x1;
     }
 
     if (y0 > y1) {
-        fix16 y0_fract = y0 - fix16_floor(y0);
-        fix16 mirrored_y0 = fix16_floor(y0) + (FIX16_ONE - y0_fract - 1);
-        fix16 mirrored_y1 = mirrored_y0 + (y0 - y1);
+        fix8 y0_fract = y0 - fix8_floor(y0);
+        fix8 mirrored_y0 = fix8_floor(y0) + (FIX8_ONE - y0_fract - 1);
+        fix8 mirrored_y1 = mirrored_y0 + (y0 - y1);
 
         y0 = mirrored_y0;
         y1 = mirrored_y1;
@@ -93,78 +297,84 @@ void draw_line_horizontal(
 
     // Top-left corner coordinates of the current pixel.
 
-    fix16 x = fix16_floor(x0);
-    fix16 y = fix16_floor(y0);
-    int bitmap_x = x / FIX16_ONE;
-    int bitmap_y = y / FIX16_ONE;
+    fix8 x = fix8_floor(x0);
+    fix8 y = fix8_floor(y0);
+
+    int bitmap_x = x / FIX8_ONE;
+    int bitmap_y = y / FIX8_ONE;
 
     // If the mid-point is to the left from the start point, do one step manually.
 
-    fix16 x0_fract = x0 - x;
-    fix16 y0_fract = y0 - y;
+    fix8 x0_fract = x0 - x;
+    fix8 y0_fract = y0 - y;
 
-    if (x0 >= x + FIX16_ONE / 2 && x1 > x + FIX16_ONE) {
+    if (x0 >= x + FIX8_ONE / 2 && x1 > x + FIX8_ONE) {
         bool line_covers_start_pixel =
-            x0_fract + y0_fract - (FIX16_ONE + FIX16_ONE / 2) <= 0 &&
-            x0_fract - y0_fract - FIX16_ONE / 2 < 0;
+            x0_fract + y0_fract - (FIX8_ONE + FIX8_ONE / 2) <= 0 &&
+            x0_fract - y0_fract - FIX8_ONE / 2 < 0;
 
         if (line_covers_start_pixel) {
-            pixels[bitmap_y * width + bitmap_x] = color;
+            if (bitmap_x < width && bitmap_y < height) {
+                pixels[bitmap_y * width + bitmap_x] = color;
+            }
         }
 
-        x += FIX16_ONE;
+        x += FIX8_ONE;
         bitmap_x += direction_x;
     }
 
-    // Line equation: Ax + By + C = 0
+    // Line equation: ax + by + c = 0
 
-    fix16 dx = x1 - x0;
-    fix16 dy = y1 - y0;
+    fix8 dx = x1 - x0;
+    fix8 dy = y1 - y0;
 
-    fix16 A = -dy;
-    fix16 B = dx;
-    fix16 C = fix16_mul(dy, x0) - fix16_mul(dx, y0);
+    fix8 a = -dy;
+    fix8 b = dx;
+    fix8 c = fix8_mul(dy, x0) - fix8_mul(dx, y0);
 
     // Check if the end point is (at the very least) on the other side of the pixel.
     // This is needed for the mid-point calculation to make sense.
 
-    if (x1 >= x + FIX16_ONE / 2) {
-        fix16 error = fix16_mul(A, (x + FIX16_ONE / 2)) + fix16_mul(B, y + FIX16_ONE) + C;
+    if (x1 >= x + FIX8_ONE / 2) {
+        fix8 error = fix8_mul(a, (x + FIX8_ONE / 2)) + fix8_mul(b, y + FIX8_ONE) + c;
 
         while (true) {
             if (error < 0) {
-                error += B;
-                y += FIX16_ONE;
+                error += b;
+                y += FIX8_ONE;
                 bitmap_y += direction_y;
             }
-            if (x1 <= x + FIX16_ONE) {
+            if (x1 <= x + FIX8_ONE) {
                 break;
             }
 
-            pixels[bitmap_y * width + bitmap_x] = color;
+            if (bitmap_x < width && bitmap_y < height) {
+                pixels[bitmap_y * width + bitmap_x] = color;
+            }
 
-            error += A;
-            x += FIX16_ONE;
+            error += a;
+            x += FIX8_ONE;
             bitmap_x += direction_x;
         }
     }
 
-    fix16 x1_fract = x1 - x;
-    fix16 y1_fract = y1 - y;
+    fix8 x1_fract = x1 - x;
+    fix8 y1_fract = y1 - y;
 
     bool line_covers_end_pixel =
-        x1_fract + y1_fract - (FIX16_ONE + FIX16_ONE / 2) > 0 ||
-        x1_fract - y1_fract - FIX16_ONE / 2 >= 0;
+        x1_fract + y1_fract - (FIX8_ONE + FIX8_ONE / 2) > 0 ||
+        x1_fract - y1_fract - FIX8_ONE / 2 >= 0;
 
     if (line_covers_end_pixel) {
-        pixels[bitmap_y * width + bitmap_x] = color;
+        if (bitmap_x < width && bitmap_y < height) {
+            pixels[bitmap_y * width + bitmap_x] = color;
+        }
     }
 }
 
 void draw_line_vertical(
     u32 *pixels, int width, int height,
-    fix16 x0, fix16 y0,
-    fix16 x1, fix16 y1,
+    fix8 x0, fix8 y0, fix8 x1, fix8 y1,
     u32 color
 ) {
     // All the math is done as if the gradient is positive.
@@ -174,18 +384,18 @@ void draw_line_vertical(
     int direction_y = y0 < y1 ? 1 : -1;
 
     if (x0 > x1) {
-        fix16 x0_fract = x0 - fix16_floor(x0);
-        fix16 mirrored_x0 = fix16_floor(x0) + (FIX16_ONE - x0_fract - 1);
-        fix16 mirrored_x1 = mirrored_x0 + (x0 - x1);
+        fix8 x0_fract = x0 - fix8_floor(x0);
+        fix8 mirrored_x0 = fix8_floor(x0) + (FIX8_ONE - x0_fract - 1);
+        fix8 mirrored_x1 = mirrored_x0 + (x0 - x1);
 
         x0 = mirrored_x0;
         x1 = mirrored_x1;
     }
 
     if (y0 > y1) {
-        fix16 y0_fract = y0 - fix16_floor(y0);
-        fix16 mirrored_y0 = fix16_floor(y0) + (FIX16_ONE - y0_fract - 1);
-        fix16 mirrored_y1 = mirrored_y0 + (y0 - y1);
+        fix8 y0_fract = y0 - fix8_floor(y0);
+        fix8 mirrored_y0 = fix8_floor(y0) + (FIX8_ONE - y0_fract - 1);
+        fix8 mirrored_y1 = mirrored_y0 + (y0 - y1);
 
         y0 = mirrored_y0;
         y1 = mirrored_y1;
@@ -193,82 +403,88 @@ void draw_line_vertical(
 
     // Top-left corner coordinates of the current pixel.
 
-    fix16 x = fix16_floor(x0);
-    fix16 y = fix16_floor(y0);
-    int bitmap_x = x / FIX16_ONE;
-    int bitmap_y = y / FIX16_ONE;
+    fix8 x = fix8_floor(x0);
+    fix8 y = fix8_floor(y0);
+
+    int bitmap_x = x / FIX8_ONE;
+    int bitmap_y = y / FIX8_ONE;
 
     // If the mid-point is to the top from the start point, do one step manually.
 
-    fix16 x0_fract = x0 - x;
-    fix16 y0_fract = y0 - y;
+    fix8 x0_fract = x0 - x;
+    fix8 y0_fract = y0 - y;
 
-    if (y0 >= y + FIX16_ONE / 2 && y1 > y + FIX16_ONE) {
+    if (y0 >= y + FIX8_ONE / 2 && y1 > y + FIX8_ONE) {
         bool line_covers_start_pixel =
-            x0_fract + y0_fract - (FIX16_ONE + FIX16_ONE / 2) < 0 &&
-            x0_fract - y0_fract + FIX16_ONE / 2 > 0;
+            x0_fract + y0_fract - (FIX8_ONE + FIX8_ONE / 2) < 0 &&
+            x0_fract - y0_fract + FIX8_ONE / 2 > 0;
 
         if (line_covers_start_pixel) {
-            pixels[bitmap_y * width + bitmap_x] = color;
+            if (bitmap_x < width && bitmap_y < height) {
+                pixels[bitmap_y * width + bitmap_x] = color;
+            }
         }
 
-        y += FIX16_ONE;
+        y += FIX8_ONE;
         bitmap_y += direction_y;
     }
 
-    // Line equation: Ax + By + C = 0
+    // Line equation: ax + by + c = 0
 
-    fix16 dx = x1 - x0;
-    fix16 dy = y1 - y0;
+    fix8 dx = x1 - x0;
+    fix8 dy = y1 - y0;
 
-    fix16 A = -dy;
-    fix16 B = dx;
-    fix16 C = fix16_mul(dy, x0) - fix16_mul(dx, y0);
+    fix8 a = -dy;
+    fix8 b = dx;
+    fix8 c = fix8_mul(dy, x0) - fix8_mul(dx, y0);
 
     // Check if the end point is at the very least on the other side of the pixel.
     // This is needed for the mid-point calculation to make sense.
 
-    if (y1 >= y + FIX16_ONE / 2) {
-        fix16 error = fix16_mul(A, (x + FIX16_ONE)) + fix16_mul(B, y + FIX16_ONE / 2) + C;
+    if (y1 >= y + FIX8_ONE / 2) {
+        fix8 error = fix8_mul(a, (x + FIX8_ONE)) + fix8_mul(b, y + FIX8_ONE / 2) + c;
 
         while (true) {
             if (error > 0) {
-                error += A;
-                x += FIX16_ONE;
+                error += a;
+                x += FIX8_ONE;
                 bitmap_x += direction_x;
             }
-            if (y1 <= y + FIX16_ONE) {
+            if (y1 <= y + FIX8_ONE) {
                 break;
             }
 
-            pixels[bitmap_y * width + bitmap_x] = color;
+            if (bitmap_x < width && bitmap_y < height) {
+                pixels[bitmap_y * width + bitmap_x] = color;
+            }
 
-            error += B;
-            y += FIX16_ONE;
+            error += b;
+            y += FIX8_ONE;
             bitmap_y += direction_y;
         }
     }
 
-    fix16 x1_fract = x1 - x;
-    fix16 y1_fract = y1 - y;
+    fix8 x1_fract = x1 - x;
+    fix8 y1_fract = y1 - y;
 
     bool line_covers_end_pixel =
-        x1_fract + y1_fract - (FIX16_ONE + FIX16_ONE / 2) >= 0 ||
-        x1_fract - y1_fract + FIX16_ONE / 2 <= 0;
+        x1_fract + y1_fract - (FIX8_ONE + FIX8_ONE / 2) >= 0 ||
+        x1_fract - y1_fract + FIX8_ONE / 2 <= 0;
 
     if (line_covers_end_pixel) {
-        pixels[bitmap_y * width + bitmap_x] = color;
+        if (bitmap_x < width && bitmap_y < height) {
+            pixels[bitmap_y * width + bitmap_x] = color;
+        }
     }
 }
 
-void draw_line_iterative(u32 *pixels, int width, int height, f32 start[2], f32 end[2], u32 color) {
-    fix16 x0 = fix16_from_float(start[0]);
-    fix16 x1 = fix16_from_float(end[0]);
-
-    fix16 y0 = fix16_from_float(start[1]);
-    fix16 y1 = fix16_from_float(end[1]);
-
-    if (fix16_abs(x1 - x0) >= fix16_abs(y1 - y0)) {
+// Line endpoint coordinates are expected to be within the [0..width] x [0..height] area.
+void draw_line_iterative(
+    u32 *pixels, int width, int height,
+    fix8 x0, fix8 y0, fix8 x1, fix8 y1,
+    u32 color
+) {
+    if (fix8_abs(x1 - x0) >= fix8_abs(y1 - y0)) {
         draw_line_horizontal(pixels, width, height, x0, y0, x1, y1, color);
     } else {
         draw_line_vertical(pixels, width, height, x0, y0, x1, y1, color);
@@ -276,62 +492,51 @@ void draw_line_iterative(u32 *pixels, int width, int height, f32 start[2], f32 e
 }
 
 // Follows DirectX line rasterization rules.
+// Line endpoint coordinates are expected to be within the [0..width] x [0..height] area.
 void draw_line_non_iterative(
     u32 *pixels, int width, int height,
-    f32 start[2], f32 end[2],
+    fix8 x0, fix8 y0, fix8 x1, fix8 y1,
     u32 color
 ) {
-    fix16 x0 = fix16_from_float(start[0]);
-    fix16 x1 = fix16_from_float(end[0]);
-
-    fix16 y0 = fix16_from_float(start[1]);
-    fix16 y1 = fix16_from_float(end[1]);
-
     // Bias x to the left: a point right between two pixels can only belong to the left one.
 
-    int min_x = fix16_ceil(fix16_min(x0, x1) - FIX16_ONE) / FIX16_ONE;
-    int max_x = fix16_ceil(fix16_max(x0, x1) - FIX16_ONE) / FIX16_ONE;
+    int min_x = fix8_ceil(fix8_min(x0, x1) - FIX8_ONE) / FIX8_ONE;
+    min_x = int_max(min_x, 0);
 
-    if (max_x < 0 || min_x >= width) {
-        return;
-    }
-    min_x = int_clamp(min_x, 0, width - 1);
-    max_x = int_clamp(max_x, 0, width - 1);
+    int max_x = fix8_ceil(fix8_max(x0, x1) - FIX8_ONE) / FIX8_ONE;
+    max_x = int_max(max_x, 0);
 
     // Bias y to the top: a point right between two pixels can only belong to the top one.
 
-    int min_y = fix16_ceil(fix16_min(y0, y1) - FIX16_ONE) / FIX16_ONE;
-    int max_y = fix16_ceil(fix16_max(y0, y1) - FIX16_ONE) / FIX16_ONE;
+    int min_y = fix8_ceil(fix8_min(y0, y1) - FIX8_ONE) / FIX8_ONE;
+    min_y = int_max(min_y, 0);
 
-    if (max_y < 0 || min_y >= height) {
-        return;
-    }
-    min_y = int_clamp(min_y, 0, height - 1);
-    max_y = int_clamp(max_y, 0, height - 1);
+    int max_y = fix8_ceil(fix8_max(y0, y1) - FIX8_ONE) / FIX8_ONE;
+    max_y = int_max(max_y, 0);
 
-    // Line equation: Ax + By + C = 0
+    // Line equation: ax + by + c = 0
 
-    fix16 dx = x1 - x0;
-    fix16 dy = y1 - y0;
+    fix8 dx = x1 - x0;
+    fix8 dy = y1 - y0;
 
-    fix16 A = -dy;
-    fix16 B = dx;
-    fix16 C = fix16_mul(dy, x0) - fix16_mul(dx, y0);
+    fix8 a = -dy;
+    fix8 b = dx;
+    fix8 c = -(fix8_mul(a, x0) + fix8_mul(b, y0));
 
-    bool line_is_y_major = fix16_abs(dx) < fix16_abs(dy);
+    bool line_is_y_major = fix8_abs(dx) < fix8_abs(dy);
 
     for (int bitmap_y = min_y; bitmap_y <= max_y; bitmap_y += 1) {
         for (int bitmap_x = min_x; bitmap_x <= max_x; bitmap_x += 1) {
-            fix16 x = bitmap_x * FIX16_ONE;
-            fix16 y = bitmap_y * FIX16_ONE;
+            fix8 x = bitmap_x * FIX8_ONE;
+            fix8 y = bitmap_y * FIX8_ONE;
 
             // Check where the top/right/bottom/left corners of the "diamond" test area are located
             // relative to the line.
 
-            fix16 sign_top = fix16_mul(A, x + FIX16_ONE / 2) + fix16_mul(B, y) + C;
-            fix16 sign_right = fix16_mul(A, x + FIX16_ONE) + fix16_mul(B, y + FIX16_ONE / 2) + C;
-            fix16 sign_bottom = fix16_mul(A, x + FIX16_ONE / 2) + fix16_mul(B, y + FIX16_ONE) + C;
-            fix16 sign_left = fix16_mul(A, x) + fix16_mul(B, y + FIX16_ONE / 2) + C;
+            fix8 sign_top = fix8_mul(a, x + FIX8_ONE / 2) + fix8_mul(b, y) + c;
+            fix8 sign_right = fix8_mul(a, x + FIX8_ONE) + fix8_mul(b, y + FIX8_ONE / 2) + c;
+            fix8 sign_bottom = fix8_mul(a, x + FIX8_ONE / 2) + fix8_mul(b, y + FIX8_ONE) + c;
+            fix8 sign_left = fix8_mul(a, x) + fix8_mul(b, y + FIX8_ONE / 2) + c;
 
             // Check if the line goes through the diamond when extended to infinity.
 
@@ -352,12 +557,12 @@ void draw_line_non_iterative(
             // Then act depending on where we are on the line relative to its endpoints.
 
             bool pixel_contains_start_point =
-                (x < x0 && x0 <= x + FIX16_ONE) &&
-                (y < y0 && y0 <= y + FIX16_ONE);
+                (x < x0 && x0 <= x + FIX8_ONE) &&
+                (y < y0 && y0 <= y + FIX8_ONE);
 
             bool pixel_contains_end_point =
-                (x < x1 && x1 <= x + FIX16_ONE) &&
-                (y < y1 && y1 <= y + FIX16_ONE);
+                (x < x1 && x1 <= x + FIX8_ONE) &&
+                (y < y1 && y1 <= y + FIX8_ONE);
 
             // Most common case: we are somewhere in the middle of the line (and we already know
             // that the line intersects the diamond area of the pixel we are deciding to fill).
@@ -370,21 +575,19 @@ void draw_line_non_iterative(
             // Rare case: the current pixel contains one of the line endpoints.
 
             bool diamond_contains_start_point =
-                fix16_abs(x0 - x - FIX16_ONE / 2) + (y0 - y) - FIX16_ONE <= 0 &&
-                fix16_abs(x0 - x - FIX16_ONE / 2) - (y0 - y) < 0;
+                fix8_abs(x0 - x - FIX8_ONE / 2) + (y0 - y) - FIX8_ONE <= 0 &&
+                fix8_abs(x0 - x - FIX8_ONE / 2) - (y0 - y) < 0;
 
-            bool diamond_contains_end_point = 
-                fix16_abs(x1 - x - FIX16_ONE / 2) + (y1 - y) - FIX16_ONE <= 0 &&
-                fix16_abs(x1 - x - FIX16_ONE / 2) - (y1 - y) < 0;
+            bool diamond_contains_end_point =
+                fix8_abs(x1 - x - FIX8_ONE / 2) + (y1 - y) - FIX8_ONE <= 0 &&
+                fix8_abs(x1 - x - FIX8_ONE / 2) - (y1 - y) < 0;
 
             if (line_is_y_major) {
                 diamond_contains_start_point =
-                    diamond_contains_start_point ||
-                    x0 == x + FIX16_ONE && y0 == y + FIX16_ONE / 2;
+                    diamond_contains_start_point || (x0 == x + FIX8_ONE && y0 == y + FIX8_ONE / 2);
 
                 diamond_contains_end_point =
-                    diamond_contains_end_point ||
-                    x1 == x + FIX16_ONE && y1 == y + FIX16_ONE / 2;
+                    diamond_contains_end_point || (x1 == x + FIX8_ONE && y1 == y + FIX8_ONE / 2);
             }
 
             // Never fill the ending pixel if the line reached the ending point before it managed to
@@ -407,15 +610,15 @@ void draw_line_non_iterative(
             // point are positioned on the opposite sides relative to the current pixel center.
             if (line_is_y_major) {
                 if (
-                    y0 < y + FIX16_ONE / 2 && y1 > y + FIX16_ONE / 2 ||
-                    y1 < y + FIX16_ONE / 2 && y0 > y + FIX16_ONE / 2
+                    (y0 < y + FIX8_ONE / 2 && y1 > y + FIX8_ONE / 2) ||
+                    (y1 < y + FIX8_ONE / 2 && y0 > y + FIX8_ONE / 2)
                 ) {
                     pixels[bitmap_y * width + bitmap_x] = color;
                 }
             } else {
                 if (
-                    x0 < x + FIX16_ONE / 2 && x1 > x + FIX16_ONE / 2 ||
-                    x1 < x + FIX16_ONE / 2 && x0 > x + FIX16_ONE / 2
+                    (x0 < x + FIX8_ONE / 2 && x1 > x + FIX8_ONE / 2) ||
+                    (x1 < x + FIX8_ONE / 2 && x0 > x + FIX8_ONE / 2)
                 ) {
                     pixels[bitmap_y * width + bitmap_x] = color;
                 }
@@ -424,209 +627,146 @@ void draw_line_non_iterative(
     }
 }
 
-void draw_line(u32 *pixels, int width, int height, f32 start[2], f32 end[2], u32 color) {
-    draw_line_non_iterative(pixels, width, height, start, end, color);
+typedef u8 ClipAreaPosition;
+
+#define CLIP_AREA_POSITION_TOP_BIT ((ClipAreaPosition)1 << 0)
+#define CLIP_AREA_POSITION_RIGHT_BIT ((ClipAreaPosition)1 << 1)
+#define CLIP_AREA_POSITION_BOTTOM_BIT ((ClipAreaPosition)1 << 2)
+#define CLIP_AREA_POSITION_LEFT_BIT ((ClipAreaPosition)1 << 3)
+
+ClipAreaPosition clip_area_position(
+    f32 const point[2],
+    f32 const clip_min[2],
+    f32 const clip_max[2]
+) {
+    ClipAreaPosition position = 0;
+
+    if (point[X] < clip_min[X]) {
+        position |= CLIP_AREA_POSITION_LEFT_BIT;
+    } else if (point[X] > clip_max[X]) {
+        position |= CLIP_AREA_POSITION_RIGHT_BIT;
+    }
+
+    if (point[Y] < clip_min[Y]) {
+        position |= CLIP_AREA_POSITION_TOP_BIT;
+    } else if (point[Y] > clip_max[Y]) {
+        position |= CLIP_AREA_POSITION_BOTTOM_BIT;
+    }
+
+    return position;
 }
 
-void render_lines(u32 *pixels, int width, int height, f64 time) {
-    clear_screen(pixels, width, height, (f32[]){ 0.1F, 0.1F, 0.1F });
+// https://en.wikipedia.org/wiki/Cohen–Sutherland_algorithm
+bool clip_line(f32 start[2], f32 end[2], f32 const clip_min[2], f32 const clip_max[2]) {
+    ClipAreaPosition start_clip_position = clip_area_position(start, clip_min, clip_max);
+    ClipAreaPosition end_clip_position = clip_area_position(end, clip_min, clip_max);
 
-    {
-        f32 top_left[2] = { 200 + 50 * cosf(2.0 * time), 200 + 50 * sinf(2.0 * time) };
-        f32 rectangle_width = 100;
-        f32 rectangle_height = 50;
+    // Keep trimming the line down until its obvious whether the line is completely inside of the
+    // clipping area or completely outside of it.
+    while (true) {
+        // Both endpoints are inside of the clipping area.
+        if (start_clip_position == 0 && end_clip_position == 0) {
+            return true;
+        }
 
-        draw_line(
-            pixels, width, height,
-            (f32[]){ top_left[0], top_left[1] },
-            (f32[]){ top_left[0] + rectangle_width, top_left[1] },
-            0xffff00
-        );
-        draw_line(
-            pixels, width, height,
-            (f32[]){ top_left[0] + rectangle_width, top_left[1] },
-            (f32[]){ top_left[0] + rectangle_width, top_left[1] + rectangle_height },
-            0xffff00
-        );
-        draw_line(
-            pixels, width, height,
-            (f32[]){ top_left[0] + rectangle_width, top_left[1] + rectangle_height },
-            (f32[]){ top_left[0], top_left[1] + rectangle_height },
-            0xffff00
-        );
-        draw_line(
-            pixels, width, height,
-            (f32[]){ top_left[0], top_left[1] + rectangle_height },
-            (f32[]){ top_left[0], top_left[1] },
-            0xffff00
-        );
-    }
+        // Both endpoints are completely to the top / right / bottom / left from the clipping area.
+        if ((start_clip_position & end_clip_position) != 0) {
+            return false;
+        }
 
-    {
-        f32 radius = 100;
-        f32 center[2] = { 300 + 50 * cosf(1.5 * time), 300 + 50 * sinf(1.5 * time) };
+        ClipAreaPosition outside_point_clip_position;
+        if (start_clip_position != 0) {
+            outside_point_clip_position = start_clip_position;
+        } else {
+            outside_point_clip_position = end_clip_position;
+        }
 
-        f32 offset[2] = { radius * cosf(2.5 * time), radius * sinf(2.5 * time) };
-        f32 start[2] = { center[0] - offset[0], center[1] - offset[1] };
-        f32 end[2] = { center[0] + offset[0], center[1] + offset[1] };
+        f32 outside_point_clipped[2];
 
-        draw_line(pixels, width, height, start, center, 0x29adff);
-        draw_line(pixels, width, height, center, end, 0xffec27);
-        draw_line(pixels, width, height, start, end, 0xff77a8);
-    }
+        if ((outside_point_clip_position & CLIP_AREA_POSITION_TOP_BIT) != 0) {
 
-    {
-        f32 radius = 100;
-        f32 center[2] = { 400.5F, 400.5F };
+            // The "outside" endpoint is above the top "y = max.y" boundary line, meanwhile the
+            // other endpoint is somewhere below the boundary line.
+            //
+            // Calculate the x coordinate of the intersection with the boundary line:
+            // intersection.x = start.x + (intersection.y - start.y) / slope
 
-        f32 offset[2] = { radius * cosf(-1.5 * time), radius * sinf(-1.5 * time) };
-        f32 start[2] = { center[0] - offset[0], center[1] - offset[1] };
-        f32 end[2] = { center[0] + offset[0], center[1] + offset[1] };
+            outside_point_clipped[X] =
+                start[X] + (end[X] - start[X]) * (clip_min[Y] - start[Y]) / (end[Y] - start[Y]);
 
-        draw_line(pixels, width, height, start, center, 0x29adff);
-        draw_line(pixels, width, height, center, end, 0xffec27);
-        draw_line(pixels, width, height, start, end, 0xff77a8);
-    }
+            outside_point_clipped[Y] = clip_min[Y];
 
-    {
-        f32 radius = 100;
-        f32 center[2] = { 300.25F, 400.25F };
+        } else if ((outside_point_clip_position & CLIP_AREA_POSITION_RIGHT_BIT) != 0) {
 
-        f32 offset[2] = { radius * cosf(1.5 * time), radius * sinf(1.5 * time) };
-        f32 start[2] = { center[0] - offset[0], center[1] - offset[1] };
-        f32 end[2] = { center[0] + offset[0], center[1] + offset[1] };
+            // The "outside" endpoint is above the right "x = max.x" boundary line, meanwhile the
+            // other endpoint is somewhere to the left from the boundary line.
+            //
+            // Calculate the y coordinate of the intersection with the boundary line:
+            // intersection.y = start.y + (intersection.x - start.x) * slope
 
-        draw_line(pixels, width, height, start, center, 0x29adff);
-        draw_line(pixels, width, height, center, end, 0xffec27);
-        draw_line(pixels, width, height, start, end, 0xff77a8);
-    }
-}
+            outside_point_clipped[X] = clip_max[X];
 
-void render_rasterization_rules_test_for_lines(u32 *pixels, int width, int height, f64 time) {
-    clear_screen(pixels, width, height, (f32[]){ 0.1F, 0.1F, 0.1F });
+            outside_point_clipped[Y] =
+                start[Y] + (end[Y] - start[Y]) * (clip_max[X] - start[X]) / (end[X] - start[X]);
 
-    f32 top_left[2] = { 100, 100 };
+        } else if ((outside_point_clip_position & CLIP_AREA_POSITION_BOTTOM_BIT) != 0) {
 
-    // Important to go in either CCW or CW order for all the corners to get filled.
-    draw_line_non_iterative(
-        pixels, width, height,
-        (f32[]){ top_left[0] - 0.5F, top_left[1] - 0.5F },
-        (f32[]){ (top_left[0] - 0.5F) + 17, top_left[1] - 0.5F },
-        0x404040
-    );
-    draw_line_non_iterative(
-        pixels, width, height,
-        (f32[]){ (top_left[0] - 0.5F) + 17, top_left[1] - 0.5F },
-        (f32[]){ (top_left[0] - 0.5F) + 17, (top_left[1] - 0.5F) + 17 },
-        0x404040
-    );
-    draw_line_non_iterative(
-        pixels, width, height,
-        (f32[]){ (top_left[0] - 0.5F) + 17, (top_left[1] - 0.5F) + 17 },
-        (f32[]){ top_left[0] - 0.5F, (top_left[1] - 0.5F) + 17 },
-        0x404040
-    );
-    draw_line_non_iterative(
-        pixels, width, height,
-        (f32[]){ top_left[0] - 0.5F, (top_left[1] - 0.5F) + 17 },
-        (f32[]){ top_left[0] - 0.5F, top_left[1] - 0.5F },
-        0x404040
-    );
+            outside_point_clipped[X] =
+                start[X] + (end[X] - start[X]) * (clip_max[Y] - start[Y]) / (end[Y] - start[Y]);
 
-    // The lines are from this image:
-    // https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-rasterizer-stage-rules#line-rasterization-rules-aliased-without-multisampling
+            outside_point_clipped[Y] = clip_max[Y];
 
-    f32 lines[][2][2] = {
-        { { 0.5F, 0.5F }, { 1.5F, 0.75F } },
-        { { 0.5F, 6.0F }, { 2.5F, 4.0F } },
-        { { 1.0F, 9.5F }, { 3.0F, 7.5F } },
-        { { 1.0F, 11.5F }, { 3.0F, 9.5F } },
-        { { 1.5F, 2.75F }, { 0.5F, 2.5F } },
-        { { 2.5F, 4.0F }, { 4.5F, 6.0F } },
-        { { 2.5F, 12.0F }, { 4.5F, 14.0F } },
-        { { 2.5F, 14.0F }, { 0.5F, 16.0F } },
-        { { 3.0F, 7.5F }, { 5.0F, 9.5F } },
-        { { 3.5F, 15.0F }, { 4.0F, 14.5F } },
-        { { 3.5F, 16.0F }, { 3.5F, 15.F } },
-        { { 3.75F, -0.2F }, { 3.8F, 1.1F } },
-        { { 4.0F, 2.5F }, { 8.5F, 4.0F } },
-        { { 4.0F, 10.5F }, { 6.0F, 12.5F } },
-        { { 6.0F, 0.5F }, { 6.1F, 0.8F } },
-        { { 6.0F, 4.5F }, { 6.0F, 5.5F } },
-        { { 6.0F, 5.5F }, { 6.0F, 6.5F } },
-        { { 6.5F, 8.0F }, { 8.5F, 10.0F } },
-        { { 7.0F, 13.5F }, { 5.0F, 15.5F } },
-        { { 7.5F, 1.0F }, { 7.75F, 0.8F } },
-        { { 8.0F, 12.5F }, { 9.0F, 12.5F } },
-        { { 8.0F, 14.5F }, { 10.0F, 14.5F } },
-        { { 8.5F, 10.0F }, { 6.5F, 12.0F } },
-        { { 9.0F, 11.5F }, { 8.0F, 11.5F } },
-        { { 9.25F, 0.75F }, { 9.25F, 1.25F } },
-        { { 10.0F, 9.5F }, { 12.0F, 11.5F } },
-        { { 10.0F, 14.5F }, { 11.0F, 15.5F } },
-        { { 10.5F, 2.0F }, { 9.0F, 6.5F } },
-        { { 10.5F, 8.0F }, { 9.5F, 8.0F } },
-        { { 11.5F, 8.0F }, { 10.5F, 8.0F } },
-        { { 11.75F, 0.75F }, { 11.75F, 1.25F } },
-        { { 12.0F, 11.5F }, { 10.0F, 13.5F } },
-        { { 12.25F, 1.4F }, { 12.25F, 1.4F } },
-        { { 12.1F, 3.2F }, { 12.25F, 3.2F } },
-        { { 12.8F, 3.2F }, { 12.95F, 3.2F } },
-        { { 12.3F, 3.3F }, { 12.5F, 3.3F }, },
-        { { 12.6F, 3.3F }, { 12.6F, 3.6F }, },
-        { { 12.1F, 3.7F }, { 12.1F, 3.9F }, },
-        { { 12.9F, 3.7F }, { 12.9F, 3.9F }, },
-        { { 12.5F, 6.0F }, { 13.0F, 5.5F } },
-        { { 12.5F, 15.0F }, { 12.0F, 15.0F } },
-        { { 13.0F, 9.5F }, { 12.5F, 9.0F } },
-        { { 13.125F, 0.375F }, { 13.375F, 0.125F } },
-        { { 13.375F, 1.875F }, { 13.125F, 1.625F } },
-        { { 13.5F, 7.0F }, { 13.5F, 6.0F } },
-        { { 13.5F, 9.0F }, { 13.5F, 10.0F } },
-        { { 13.5F, 16.0F }, { 12.5F, 15.0F } },
-        { { 14.0F, 4.5F }, { 14.5F, 5.0F } },
-        { { 14.1F, 10.8F }, { 12.3F, 13.9F } },
-        { { 14.25F, 0.1F }, { 14.75F, 0.1F } },
-        { { 14.25F, 3.25F }, { 13.8F, 2.8F } },
-        { { 14.625F, 3.125F }, { 15.125F, 3.375F } },
-        { { 15.0F, 8.5F }, { 15.5F, 8.0F } },
-        { { 15.2F, 2.8F }, { 14.8F, 2.8F } },
-        { { 15.5F, 6.0F }, { 15.0F, 6.5F } },
-        { { 15.625F, 0.125F }, { 15.875F, 0.375F } },
-        { { 15.875F, 1.625F }, { 15.625F, 1.875F } },
-        { { 15.8F, 3.2F }, { 15.8F, 2.8F } },
-        { { 15.8F, 14.2F }, { 15.1F, 15.5F } },
-        { { 16.1F, 10.8F }, { 14.0F, 14.5F } },
-    };
+        } else /* if ((outside_point_clip_position & CLIP_AREA_POSITION_LEFT_BIT) != 0) */ {
 
-    for (int i = 0; i < sizeof(lines) / sizeof(lines[0]); i += 1) {
-        draw_line_non_iterative(
-            pixels, width, height,
-            (f32[]){ top_left[0] + lines[i][0][0], top_left[1] + lines[i][0][1] },
-            (f32[]){ top_left[0] + lines[i][1][0], top_left[1] + lines[i][1][1] },
-            0xffffff
-        );
-    }
-}
+            outside_point_clipped[X] = clip_min[X];
 
-void render_gradient(u32 *pixels, int width, int height, f64 time) {
-    for (int y = 0; y < height; y += 1) {
-        for (int x = 0; x < width; x += 1) {
-            f32 uv[2] = {(f32)x / width, (f32)y / height};
-            f32 color[3] = {
-                0.5F + 0.5F * cosf(time + uv[0]),
-                0.5F + 0.5F * cosf(time + uv[1] + 2),
-                0.5F + 0.5F * cosf(time + uv[0] + 4),
-            };
+            outside_point_clipped[Y] =
+                start[Y] + (end[Y] - start[Y]) * (clip_min[X] - start[X]) / (end[X] - start[X]);
 
-            pixels[y * width + x] =
-                (u32)(color[0] * 255) << 16 |
-                (u32)(color[1] * 255) << 8 |
-                (u32)(color[2] * 255);
+        }
+
+        if (outside_point_clip_position == start_clip_position) {
+            f32x2_copy(outside_point_clipped, start);
+            start_clip_position = clip_area_position(start, clip_min, clip_max);
+        } else {
+            f32x2_copy(outside_point_clipped, end);
+            end_clip_position = clip_area_position(end, clip_min, clip_max);
         }
     }
 }
 
-void render(u32 *pixels, int width, int height, f64 time) {
-    render_lines(pixels, width, height, time);
+void draw_line(
+    u32 *pixels, int width, int height,
+    f32 const start[2], f32 const end[2],
+    u32 color
+) {
+    // (-1, -1) -> (0.5, 0.5) center of the bottom-left pixel on the screen.
+    // (1, 1) -> (width - 0.5, height - 0.5) center of the top-right pixel on the screen.
+    f32 start_clipped[2] = {
+        (start[0] + 1) / 2 * (width - 1) + 0.5F,
+        (-start[1] + 1) / 2 * (height - 1) + 0.5F,
+    };
+    f32 end_clipped[2] = {
+        (end[0] + 1) / 2 * (width - 1) + 0.5F,
+        (-end[1] + 1) / 2 * (height - 1) + 0.5F,
+    };
+
+    f32 clip_min[2] = { 0, 0 };
+    f32 clip_max[2] = { width, height };
+
+    if (clip_line(start_clipped, end_clipped, clip_min, clip_max)) {
+        fix8 x0 = fix8_from_float(start_clipped[0]);
+        fix8 y0 = fix8_from_float(start_clipped[1]);
+
+        fix8 x1 = fix8_from_float(end_clipped[0]);
+        fix8 y1 = fix8_from_float(end_clipped[1]);
+
+        draw_line_iterative(pixels, width, height, x0, y0, x1, y1, color);
+    }
+}
+
+void clear_screen(u32 *pixels, int width, int height, u32 color) {
+    for (int i = 0; i < width * height; i += 1) {
+        pixels[i] = color;
+    }
 }
