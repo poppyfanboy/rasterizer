@@ -1,4 +1,4 @@
-#include <math.h>
+#include "math.c"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -10,12 +10,13 @@ typedef int64_t i64;
 
 typedef ptrdiff_t isize;
 
-typedef float f32;
-typedef double f64;
-
 #define ARRAY_COUNT(array) ((isize)sizeof(array) / (isize)sizeof((array)[0]))
 
 #define PI 3.14159265358979323846
+
+static inline f64 degrees_to_radians(f64 degrees) {
+    return degrees / 180 * PI;
+}
 
 static inline int int_max(int left, int right) {
     return left > right ? left : right;
@@ -38,7 +39,7 @@ typedef i32 fix8;
 #define FIX8_FRACTIONAL_BITS (FIX8_ONE - 1)
 #define FIX8_INTEGER_BITS (~FIX8_FRACTIONAL_BITS)
 
-static inline fix8 fix8_mul(fix8 left, fix8 right) {
+static inline fix8 fix8_multiply(fix8 left, fix8 right) {
     i64 product = (i64)left * (i64)right;
 
     // Do the rounding using the most significant bit from the part which is getting shifted out.
@@ -70,163 +71,6 @@ static inline fix8 fix8_max(fix8 left, fix8 right) {
 static inline fix8 fix8_from_float(f32 value) {
     // Add 0.5, so that after truncation the value gets effectively rounded.
     return (value * FIX8_ONE) + (value >= 0 ? 0.5F : -0.5F);
-}
-
-#define X 0
-#define Y 1
-#define Z 2
-#define W 3
-
-#define R 0
-#define G 1
-#define B 2
-#define A 3
-
-static inline f64 degrees_to_radians(f64 degrees) {
-    return degrees / 180 * PI;
-}
-
-static inline void f32x2_copy(f32 const source[2], f32 dest[2]) {
-    dest[0] = source[0];
-    dest[1] = source[1];
-}
-
-static inline void f32x2_add(f32 const left[2], f32 const right[2], f32 result[2]) {
-    result[0] = left[0] + right[0];
-    result[1] = left[1] + right[1];
-}
-
-static inline void f32x2_sub(f32 const left[2], f32 const right[2], f32 result[2]) {
-    result[0] = left[0] - right[0];
-    result[1] = left[1] - right[1];
-}
-
-static inline f32 *f32x2_scale(f32 vector[2], f32 scalar) {
-    vector[0] *= scalar;
-    vector[1] *= scalar;
-    return vector;
-}
-
-static inline f32 *f32x2_add_assign(f32 left[2], f32 const right[2]) {
-    f32x2_add(left, right, left);
-    return left;
-}
-
-static inline void f32x3_copy(f32 const source[3], f32 dest[3]) {
-    dest[0] = source[0];
-    dest[1] = source[1];
-    dest[2] = source[2];
-}
-
-static inline f32 f32x3_dot(f32 const left[3], f32 const right[3]) {
-    return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
-}
-
-static inline void f32x3_add(f32 const left[3], f32 const right[3], f32 result[3]) {
-    result[0] = left[0] + right[0];
-    result[1] = left[1] + right[1];
-    result[2] = left[2] + right[2];
-}
-
-static inline f32 *f32x3_add_assign(f32 left[3], f32 const right[3]) {
-    f32x3_add(left, right, left);
-    return left;
-}
-
-static inline f32 *f32x3_scale(f32 vector[3], f32 scalar) {
-    vector[0] *= scalar;
-    vector[1] *= scalar;
-    vector[2] *= scalar;
-    return vector;
-}
-
-static inline void f32x3_normalize(f32 vector[3]) {
-    f32 length = sqrtf(f32x3_dot(vector, vector));
-    vector[0] /= length;
-    vector[1] /= length;
-    vector[2] /= length;
-}
-
-static inline void f32x4_copy(f32 const source[4], f32 dest[4]) {
-    dest[0] = source[0];
-    dest[1] = source[1];
-    dest[2] = source[2];
-    dest[3] = source[3];
-}
-
-static inline f32 f32x4_dot(f32 const left[4], f32 const right[4]) {
-    return left[0] * right[0] + left[1] * right[1] + left[2] * right[2] + left[3] * right[3];
-}
-
-static inline void f32x4_normalize(f32 vector[4]) {
-    f32 length = sqrtf(f32x4_dot(vector, vector));
-    vector[0] /= length;
-    vector[1] /= length;
-    vector[2] /= length;
-    vector[3] /= length;
-}
-
-void f32x3x3_mul_vector(f32 const matrix[3][3], f32 const vector[3], f32 result[3]) {
-    f32 temp[3];
-    temp[0] = f32x3_dot(matrix[0], vector);
-    temp[1] = f32x3_dot(matrix[1], vector);
-    temp[2] = f32x3_dot(matrix[2], vector);
-
-    f32x3_copy(temp, result);
-}
-
-static inline void quaternion_identity(f32 quaternion[4]) {
-    quaternion[X] = 0;
-    quaternion[Y] = 0;
-    quaternion[Z] = 0;
-    quaternion[W] = 1;
-}
-
-static inline void quaternion_from_vector(f32 const vector[3], f32 quaternion[4]) {
-    quaternion[X] = vector[X];
-    quaternion[Y] = vector[Y];
-    quaternion[Z] = vector[Z];
-    quaternion[W] = 0;
-}
-
-static inline void quaternion_from_axis_angle(f32 const axis[3], f32 angle, f32 result[4]) {
-    f32 sine = sinf(angle / 2);
-    f32 cosine = cosf(angle / 2);
-
-    result[X] = sine * axis[X];
-    result[Y] = sine * axis[Y];
-    result[Z] = sine * axis[Z];
-    result[W] = cosine;
-}
-
-static inline void quaternion_multiply(f32 const left[4], f32 const right[4], f32 result[4]) {
-    f32 temp[4];
-    temp[X] = left[W] * right[X] + left[X] * right[W] + left[Y] * right[Z] - left[Z] * right[Y];
-    temp[Y] = left[W] * right[Y] - left[X] * right[Z] + left[Y] * right[W] + left[Z] * right[X];
-    temp[Z] = left[W] * right[Z] + left[X] * right[Y] - left[Y] * right[X] + left[Z] * right[W];
-    temp[W] = left[W] * right[W] - left[X] * right[X] - left[Y] * right[Y] - left[Z] * right[Z];
-
-    f32x4_copy(temp, result);
-}
-
-static inline void quaternion_conjugate(f32 const quaternion[4], f32 result[4]) {
-    result[X] = -quaternion[X];
-    result[Y] = -quaternion[Y];
-    result[Z] = -quaternion[Z];
-    result[W] = quaternion[W];
-}
-
-// The "quaternion" parameter is expected to be a unit quaternion.
-static inline void quaternion_rotate(f32 vector[3], f32 const quaternion[4]) {
-    f32 quaternion_conjugated[4];
-    quaternion_conjugate(quaternion, quaternion_conjugated);
-
-    f32 result[4];
-    quaternion_from_vector(vector, result);
-    quaternion_multiply(quaternion, result, result);
-    quaternion_multiply(result, quaternion_conjugated, result);
-
-    f32x3_copy(result, vector);
 }
 
 static inline u32 rgb_to_u32(f32 color[3]) {
@@ -330,13 +174,13 @@ void draw_line_horizontal(
 
     fix8 a = -dy;
     fix8 b = dx;
-    fix8 c = fix8_mul(dy, x0) - fix8_mul(dx, y0);
+    fix8 c = fix8_multiply(dy, x0) - fix8_multiply(dx, y0);
 
     // Check if the end point is (at the very least) on the other side of the pixel.
     // This is needed for the mid-point calculation to make sense.
 
     if (x1 >= x + FIX8_ONE / 2) {
-        fix8 error = fix8_mul(a, (x + FIX8_ONE / 2)) + fix8_mul(b, y + FIX8_ONE) + c;
+        fix8 error = fix8_multiply(a, (x + FIX8_ONE / 2)) + fix8_multiply(b, y + FIX8_ONE) + c;
 
         while (true) {
             if (error < 0) {
@@ -436,13 +280,13 @@ void draw_line_vertical(
 
     fix8 a = -dy;
     fix8 b = dx;
-    fix8 c = fix8_mul(dy, x0) - fix8_mul(dx, y0);
+    fix8 c = fix8_multiply(dy, x0) - fix8_multiply(dx, y0);
 
     // Check if the end point is at the very least on the other side of the pixel.
     // This is needed for the mid-point calculation to make sense.
 
     if (y1 >= y + FIX8_ONE / 2) {
-        fix8 error = fix8_mul(a, (x + FIX8_ONE)) + fix8_mul(b, y + FIX8_ONE / 2) + c;
+        fix8 error = fix8_multiply(a, (x + FIX8_ONE)) + fix8_multiply(b, y + FIX8_ONE / 2) + c;
 
         while (true) {
             if (error > 0) {
@@ -521,7 +365,7 @@ void draw_line_non_iterative(
 
     fix8 a = -dy;
     fix8 b = dx;
-    fix8 c = -(fix8_mul(a, x0) + fix8_mul(b, y0));
+    fix8 c = -(fix8_multiply(a, x0) + fix8_multiply(b, y0));
 
     bool line_is_y_major = fix8_abs(dx) < fix8_abs(dy);
 
@@ -533,10 +377,14 @@ void draw_line_non_iterative(
             // Check where the top/right/bottom/left corners of the "diamond" test area are located
             // relative to the line.
 
-            fix8 sign_top = fix8_mul(a, x + FIX8_ONE / 2) + fix8_mul(b, y) + c;
-            fix8 sign_right = fix8_mul(a, x + FIX8_ONE) + fix8_mul(b, y + FIX8_ONE / 2) + c;
-            fix8 sign_bottom = fix8_mul(a, x + FIX8_ONE / 2) + fix8_mul(b, y + FIX8_ONE) + c;
-            fix8 sign_left = fix8_mul(a, x) + fix8_mul(b, y + FIX8_ONE / 2) + c;
+            fix8 sign_top =
+                fix8_multiply(a, x + FIX8_ONE / 2) + fix8_multiply(b, y) + c;
+            fix8 sign_right =
+                fix8_multiply(a, x + FIX8_ONE) + fix8_multiply(b, y + FIX8_ONE / 2) + c;
+            fix8 sign_bottom =
+                fix8_multiply(a, x + FIX8_ONE / 2) + fix8_multiply(b, y + FIX8_ONE) + c;
+            fix8 sign_left =
+                fix8_multiply(a, x) + fix8_multiply(b, y + FIX8_ONE / 2) + c;
 
             // Check if the line goes through the diamond when extended to infinity.
 
@@ -762,6 +610,27 @@ void draw_line(
         fix8 y1 = fix8_from_float(end_clipped[1]);
 
         draw_line_iterative(pixels, width, height, x0, y0, x1, y1, color);
+    }
+}
+
+void draw_triangle(
+    u32 *pixels, int width, int height,
+    f32 vertex1[3], f32 vertex2[3], f32 vertex3[3],
+    u32 color
+) {
+    f32 direction_1_to_2[3], direction_1_to_3[3];
+    f32x3_subtract(vertex2, vertex1, direction_1_to_2);
+    f32x3_subtract(vertex3, vertex1, direction_1_to_3);
+
+    // Triangles with the CCW order are treated as front-facing.
+    f32 normal_vector[3];
+    f32x3_cross(direction_1_to_2, direction_1_to_3, normal_vector);
+
+    // Render only the front-facing triangles.
+    if (normal_vector[Z] >= 0) {
+        draw_line(pixels, width, height, vertex1, vertex2, color);
+        draw_line(pixels, width, height, vertex2, vertex3, color);
+        draw_line(pixels, width, height, vertex3, vertex1, color);
     }
 }
 

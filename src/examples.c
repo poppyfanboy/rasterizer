@@ -50,7 +50,7 @@ void render_iterative_lines(
         f32x2_scale(offset, 100);
 
         f32 start[2], end[2];
-        f32x2_sub(center, offset, start);
+        f32x2_subtract(center, offset, start);
         f32x2_add(center, offset, end);
 
         draw_line_iterative(
@@ -80,7 +80,7 @@ void render_iterative_lines(
         f32x2_scale(offset, 100);
 
         f32 start[2], end[2];
-        f32x2_sub(center, offset, start);
+        f32x2_subtract(center, offset, start);
         f32x2_add(center, offset, end);
 
         draw_line_iterative(pixels, width, height,
@@ -109,7 +109,7 @@ void render_iterative_lines(
         f32x2_scale(offset, 100);
 
         f32 start[2], end[2];
-        f32x2_sub(center, offset, start);
+        f32x2_subtract(center, offset, start);
         f32x2_add(center, offset, end);
 
         draw_line_iterative(pixels, width, height,
@@ -150,7 +150,7 @@ void render_non_iterative_lines(
     f32 box_min[2], box_max[2];
     f32x2_copy(top_left, box_min);
     f32x2_copy(top_left, box_max);
-    f32x2_sub(box_min, (f32[]){ 0.5F, 0.5F }, box_min);
+    f32x2_subtract(box_min, (f32[]){ 0.5F, 0.5F }, box_min);
     f32x2_add(box_max, (f32[]){ 17 + 0.5F, 17 + 0.5F }, box_max);
 
     // Important to go in either CCW or CW order for all the corners to get filled.
@@ -316,19 +316,26 @@ typedef struct {
     f32 (*vertices)[3];
     int vertex_count;
 
-    f32 orientation[4];
+    Transform transform;
+    Camera camera;
 } Cube;
 
 Cube *initialize_cube(void) {
     Cube *cube = malloc(sizeof(*cube));
     cube->vertices = malloc(36 * sizeof(*cube->vertices));
     cube->vertex_count = 36;
-    quaternion_identity(cube->orientation);
+
+    transform_identity(&cube->transform);
+    transform_translate(&cube->transform, (f32[]){ 0, 0, -1.5F });
+
+    cube->camera.yaw = 0;
+    cube->camera.pitch = 0;
+    f32x3_copy((f32[]){ 0, 0, 0 }, cube->camera.position);
 
     f32 cube_width = 0.75F;
     f32 cube_face_vertices[][3] = {
-        { -0.5F,  0.0F, -0.5F  }, {  0.5F,  0.0F,  0.5F  }, { -0.5F,  0.0F,  0.5F  },
-        { -0.5F,  0.0F, -0.5F  }, {  0.5F,  0.0F, -0.5F  }, {  0.5F,  0.0F,  0.5F  },
+        { -0.5F,  0.0F, -0.5F  }, { -0.5F,  0.0F,  0.5F  }, {  0.5F,  0.0F,  0.5F  },
+        { -0.5F,  0.0F, -0.5F  }, {  0.5F,  0.0F,  0.5F  }, {  0.5F,  0.0F, -0.5F  },
     };
     f32 cube_face_transforms[][3][3] = {
         { {  1,  0,  0  }, {  0,  1,  0  }, {  0,  0,  1  } }, //   0° around X-axis
@@ -343,13 +350,13 @@ Cube *initialize_cube(void) {
 
     for (int face_index = 0; face_index < 6; face_index += 1) {
         f32 face_offset[3] = { 0.0F, 0.5F, 0.0F };
-        f32x3x3_mul_vector(cube_face_transforms[face_index], face_offset, face_offset);
+        f32x3x3_multiply_vector(cube_face_transforms[face_index], face_offset, face_offset);
         f32x3_scale(face_offset, cube_width);
 
         for (int vertex_index = 0; vertex_index < 6; vertex_index += 1) {
             f32x3_copy(cube_face_vertices[vertex_index], *vertex_iter);
 
-            f32x3x3_mul_vector(cube_face_transforms[face_index], *vertex_iter, *vertex_iter);
+            f32x3x3_multiply_vector(cube_face_transforms[face_index], *vertex_iter, *vertex_iter);
             f32x3_scale(*vertex_iter, cube_width);
             f32x3_add_assign(*vertex_iter, face_offset);
 
@@ -361,45 +368,42 @@ Cube *initialize_cube(void) {
 }
 
 void render_cube(Cube *cube, u32 *pixels, int width, int height, f64 time, f64 delta_time) {
-    f32 rotation_axis[3] = { 1, 2, 4 };
+    f32 rotation_axis[3] = { 1, 2, 3 };
     f32x3_normalize(rotation_axis);
-
-    f32 rotation_delta[4];
-    quaternion_from_axis_angle(rotation_axis, 1.25F * delta_time, rotation_delta);
-    quaternion_multiply(rotation_delta, cube->orientation, cube->orientation);
-
-    // Maybe use this instead:
-    // https://allenchou.net/2014/02/game-math-fast-re-normalization-of-unit-vectors
-    f32x4_normalize(cube->orientation);
+    transform_rotate_around(&cube->transform, rotation_axis, 1.25F * delta_time);
 
     if (width == 0 || height == 0) {
         return;
     }
 
-    f32 aspect_ratio = (f32)width / height;
-    f32 vertical_fov = degrees_to_radians(75);
-    f32 vertical_fov_coefficient = 1 / tanf(vertical_fov / 2);
-
     u32 clear_color = rgb_to_u32((f32[]){ 0.1F, 0.1F, 0.1F });
     clear_screen(pixels, width, height, clear_color);
 
+    f32 projection[4][4];
+    perspective_projection((f32)width / height, degrees_to_radians(75), 0.1, 100, projection);
+
     for (int i = 0; i < cube->vertex_count; i += 3) {
-        f32 triangle[3][3];
+        f32 triangle[3][4];
+
         f32x3_copy(cube->vertices[i], triangle[0]);
         f32x3_copy(cube->vertices[i + 1], triangle[1]);
         f32x3_copy(cube->vertices[i + 2], triangle[2]);
 
-        for (int j = 0; j < 3; j += 1) {
-            quaternion_rotate(triangle[j], cube->orientation);
-            triangle[j][Z] -= 1.25;
+        triangle[0][W] = 1;
+        triangle[1][W] = 1;
+        triangle[2][W] = 1;
 
-            triangle[j][X] *= vertical_fov_coefficient / (-triangle[j][Z] * aspect_ratio);
-            triangle[j][Y] *= vertical_fov_coefficient / (-triangle[j][Z]);
+        for (int j = 0; j < 3; j += 1) {
+            transform_apply(&cube->transform, triangle[j]);
+            camera_apply(&cube->camera, triangle[j]);
+            f32x4x4_multiply_vector(projection, triangle[j], triangle[j]);
+
+            triangle[j][X] /= triangle[j][W];
+            triangle[j][Y] /= triangle[j][W];
+            triangle[j][Z] /= triangle[j][W];
         }
 
-        draw_line(pixels, width, height, triangle[0], triangle[1], 0xffffff);
-        draw_line(pixels, width, height, triangle[1], triangle[2], 0xffffff);
-        draw_line(pixels, width, height, triangle[2], triangle[0], 0xffffff);
+        draw_triangle(pixels, width, height, triangle[0], triangle[1], triangle[2], 0xffffff);
     }
 }
 
