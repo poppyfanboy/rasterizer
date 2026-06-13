@@ -110,215 +110,149 @@ void hsv_to_rgb(f32 const hsv[3], f32 rgb[3]) {
     f32x3_add_assign(rgb, (f32[]){ m, m, m });
 }
 
-void draw_line_horizontal(
-    u32 *pixels, int width, int height,
-    fix8 x0, fix8 y0, fix8 x1, fix8 y1,
-    u32 color
-) {
+typedef struct {
+    int bitmap_x, bitmap_y;
+    int bitmap_direction_x, bitmap_direction_y;
+
+    fix8 x0, y0;
+    fix8 x1, y1;
+
+    fix8 x, y;
+} LinePlotter;
+
+void line_plotter_initialize(fix8 x0, fix8 y0, fix8 x1, fix8 y1, LinePlotter *plotter) {
     // All the math is done as if the gradient is positive.
     // Save original direction to calculate bitmap coordinates at each step.
 
-    int direction_x = x0 < x1 ? 1 : -1;
-    int direction_y = y0 < y1 ? 1 : -1;
+    if (x0 <= x1) {
+        plotter->bitmap_x = x0 / FIX8_ONE;
+        plotter->bitmap_direction_x = 1;
 
-    if (x0 > x1) {
+        plotter->x0 = x0;
+        plotter->x1 = x1;
+    } else {
+        plotter->bitmap_x = fix8_ceil(x0 - FIX8_ONE) / FIX8_ONE;
+        plotter->bitmap_direction_x = -1;
+
         fix8 x0_fract = x0 - fix8_floor(x0);
-        fix8 mirrored_x0 = fix8_floor(x0) + (FIX8_ONE - x0_fract - 1);
+        fix8 mirrored_x0 = fix8_floor(x0) + (FIX8_ONE - x0_fract);
         fix8 mirrored_x1 = mirrored_x0 + (x0 - x1);
 
-        x0 = mirrored_x0;
-        x1 = mirrored_x1;
+        plotter->x0 = mirrored_x0;
+        plotter->x1 = mirrored_x1;
     }
 
-    if (y0 > y1) {
+    if (y0 <= y1) {
+        plotter->bitmap_y = y0 / FIX8_ONE;
+        plotter->bitmap_direction_y = 1;
+
+        plotter->y0 = y0;
+        plotter->y1 = y1;
+    } else {
+        plotter->bitmap_y = fix8_ceil(y0 - FIX8_ONE) / FIX8_ONE;
+        plotter->bitmap_direction_y = -1;
+
         fix8 y0_fract = y0 - fix8_floor(y0);
-        fix8 mirrored_y0 = fix8_floor(y0) + (FIX8_ONE - y0_fract - 1);
+        fix8 mirrored_y0 = fix8_floor(y0) + (FIX8_ONE - y0_fract);
         fix8 mirrored_y1 = mirrored_y0 + (y0 - y1);
 
-        y0 = mirrored_y0;
-        y1 = mirrored_y1;
+        plotter->y0 = mirrored_y0;
+        plotter->y1 = mirrored_y1;
     }
 
     // Top-left corner coordinates of the current pixel.
 
-    fix8 x = fix8_floor(x0);
-    fix8 y = fix8_floor(y0);
+    plotter->x = fix8_floor(plotter->x0);
+    plotter->y = fix8_floor(plotter->y0);
+}
 
-    int bitmap_x = x / FIX8_ONE;
-    int bitmap_y = y / FIX8_ONE;
+static inline void line_plotter_step_x(LinePlotter *plotter) {
+    plotter->x += FIX8_ONE;
+    plotter->bitmap_x += plotter->bitmap_direction_x;
+}
 
-    // If the mid-point is to the left from the start point, do one step manually.
+static inline void line_plotter_step_y(LinePlotter *plotter) {
+    plotter->y += FIX8_ONE;
+    plotter->bitmap_y += plotter->bitmap_direction_y;
+}
 
-    fix8 x0_fract = x0 - x;
-    fix8 y0_fract = y0 - y;
+static inline void line_plotter_put_pixel(
+    LinePlotter *plotter,
+    u32 *pixels, int width, int height,
+    u32 color
+) {
+    pixels[plotter->bitmap_y * width + plotter->bitmap_x] = color;
+}
 
-    if (x0 >= x + FIX8_ONE / 2 && x1 > x + FIX8_ONE) {
-        bool line_covers_start_pixel =
-            x0_fract + y0_fract - (FIX8_ONE + FIX8_ONE / 2) <= 0 &&
-            x0_fract - y0_fract - FIX8_ONE / 2 < 0;
-
-        if (line_covers_start_pixel) {
-            if (bitmap_x < width && bitmap_y < height) {
-                pixels[bitmap_y * width + bitmap_x] = color;
-            }
-        }
-
-        x += FIX8_ONE;
-        bitmap_x += direction_x;
-    }
-
+void draw_line_horizontal(
+    LinePlotter *plotter,
+    u32 *pixels, int width, int height,
+    u32 color
+) {
     // Line equation: ax + by + c = 0
 
-    fix8 dx = x1 - x0;
-    fix8 dy = y1 - y0;
+    fix8 dx = plotter->x1 - plotter->x0;
+    fix8 dy = plotter->y1 - plotter->y0;
 
     fix8 a = -dy;
     fix8 b = dx;
-    fix8 c = fix8_multiply(dy, x0) - fix8_multiply(dx, y0);
+    fix8 c = fix8_multiply(dy, plotter->x0) - fix8_multiply(dx, plotter->y0);
 
-    // Check if the end point is (at the very least) on the other side of the pixel.
-    // This is needed for the mid-point calculation to make sense.
-
-    if (x1 >= x + FIX8_ONE / 2) {
-        fix8 error = fix8_multiply(a, (x + FIX8_ONE / 2)) + fix8_multiply(b, y + FIX8_ONE) + c;
-
-        while (true) {
-            if (error < 0) {
-                error += b;
-                y += FIX8_ONE;
-                bitmap_y += direction_y;
-            }
-            if (x1 <= x + FIX8_ONE) {
-                break;
-            }
-
-            if (bitmap_x < width && bitmap_y < height) {
-                pixels[bitmap_y * width + bitmap_x] = color;
-            }
-
-            error += a;
-            x += FIX8_ONE;
-            bitmap_x += direction_x;
-        }
+    if (plotter->x <= plotter->x0 + FIX8_ONE / 2) {
+        line_plotter_put_pixel(plotter, pixels, width, height, color);
+    } else {
+        line_plotter_step_x(plotter);
     }
 
-    fix8 x1_fract = x1 - x;
-    fix8 y1_fract = y1 - y;
+    fix8 error =
+        fix8_multiply(a, (plotter->x + FIX8_ONE / 2)) + fix8_multiply(b, plotter->y + FIX8_ONE) + c;
 
-    bool line_covers_end_pixel =
-        x1_fract + y1_fract - (FIX8_ONE + FIX8_ONE / 2) > 0 ||
-        x1_fract - y1_fract - FIX8_ONE / 2 >= 0;
-
-    if (line_covers_end_pixel) {
-        if (bitmap_x < width && bitmap_y < height) {
-            pixels[bitmap_y * width + bitmap_x] = color;
+    while (plotter->x + FIX8_ONE <= plotter->x1) {
+        if (error < 0) {
+            error += b;
+            line_plotter_step_y(plotter);
         }
+
+        line_plotter_put_pixel(plotter, pixels, width, height, color);
+
+        error += a;
+        line_plotter_step_x(plotter);
     }
 }
 
 void draw_line_vertical(
+    LinePlotter *plotter,
     u32 *pixels, int width, int height,
-    fix8 x0, fix8 y0, fix8 x1, fix8 y1,
     u32 color
 ) {
-    // All the math is done as if the gradient is positive.
-    // Save original direction to calculate bitmap coordinates at each step.
-
-    int direction_x = x0 < x1 ? 1 : -1;
-    int direction_y = y0 < y1 ? 1 : -1;
-
-    if (x0 > x1) {
-        fix8 x0_fract = x0 - fix8_floor(x0);
-        fix8 mirrored_x0 = fix8_floor(x0) + (FIX8_ONE - x0_fract - 1);
-        fix8 mirrored_x1 = mirrored_x0 + (x0 - x1);
-
-        x0 = mirrored_x0;
-        x1 = mirrored_x1;
-    }
-
-    if (y0 > y1) {
-        fix8 y0_fract = y0 - fix8_floor(y0);
-        fix8 mirrored_y0 = fix8_floor(y0) + (FIX8_ONE - y0_fract - 1);
-        fix8 mirrored_y1 = mirrored_y0 + (y0 - y1);
-
-        y0 = mirrored_y0;
-        y1 = mirrored_y1;
-    }
-
-    // Top-left corner coordinates of the current pixel.
-
-    fix8 x = fix8_floor(x0);
-    fix8 y = fix8_floor(y0);
-
-    int bitmap_x = x / FIX8_ONE;
-    int bitmap_y = y / FIX8_ONE;
-
-    // If the mid-point is to the top from the start point, do one step manually.
-
-    fix8 x0_fract = x0 - x;
-    fix8 y0_fract = y0 - y;
-
-    if (y0 >= y + FIX8_ONE / 2 && y1 > y + FIX8_ONE) {
-        bool line_covers_start_pixel =
-            x0_fract + y0_fract - (FIX8_ONE + FIX8_ONE / 2) < 0 &&
-            x0_fract - y0_fract + FIX8_ONE / 2 > 0;
-
-        if (line_covers_start_pixel) {
-            if (bitmap_x < width && bitmap_y < height) {
-                pixels[bitmap_y * width + bitmap_x] = color;
-            }
-        }
-
-        y += FIX8_ONE;
-        bitmap_y += direction_y;
-    }
-
     // Line equation: ax + by + c = 0
 
-    fix8 dx = x1 - x0;
-    fix8 dy = y1 - y0;
+    fix8 dx = plotter->x1 - plotter->x0;
+    fix8 dy = plotter->y1 - plotter->y0;
 
     fix8 a = -dy;
     fix8 b = dx;
-    fix8 c = fix8_multiply(dy, x0) - fix8_multiply(dx, y0);
+    fix8 c = fix8_multiply(dy, plotter->x0) - fix8_multiply(dx, plotter->y0);
 
-    // Check if the end point is at the very least on the other side of the pixel.
-    // This is needed for the mid-point calculation to make sense.
-
-    if (y1 >= y + FIX8_ONE / 2) {
-        fix8 error = fix8_multiply(a, (x + FIX8_ONE)) + fix8_multiply(b, y + FIX8_ONE / 2) + c;
-
-        while (true) {
-            if (error > 0) {
-                error += a;
-                x += FIX8_ONE;
-                bitmap_x += direction_x;
-            }
-            if (y1 <= y + FIX8_ONE) {
-                break;
-            }
-
-            if (bitmap_x < width && bitmap_y < height) {
-                pixels[bitmap_y * width + bitmap_x] = color;
-            }
-
-            error += b;
-            y += FIX8_ONE;
-            bitmap_y += direction_y;
-        }
+    if (plotter->y <= plotter->y0 + FIX8_ONE / 2) {
+        line_plotter_put_pixel(plotter, pixels, width, height, color);
+    } else {
+        line_plotter_step_y(plotter);
     }
 
-    fix8 x1_fract = x1 - x;
-    fix8 y1_fract = y1 - y;
+    fix8 error =
+        fix8_multiply(a, (plotter->x + FIX8_ONE)) + fix8_multiply(b, plotter->y + FIX8_ONE / 2) + c;
 
-    bool line_covers_end_pixel =
-        x1_fract + y1_fract - (FIX8_ONE + FIX8_ONE / 2) >= 0 ||
-        x1_fract - y1_fract + FIX8_ONE / 2 <= 0;
-
-    if (line_covers_end_pixel) {
-        if (bitmap_x < width && bitmap_y < height) {
-            pixels[bitmap_y * width + bitmap_x] = color;
+    while (plotter->y + FIX8_ONE <= plotter->y1) {
+        if (error > 0) {
+            error += a;
+            line_plotter_step_x(plotter);
         }
+
+        line_plotter_put_pixel(plotter, pixels, width, height, color);
+
+        error += b;
+        line_plotter_step_y(plotter);
     }
 }
 
@@ -328,10 +262,13 @@ void draw_line_iterative(
     fix8 x0, fix8 y0, fix8 x1, fix8 y1,
     u32 color
 ) {
+    LinePlotter plotter;
+    line_plotter_initialize(x0, y0, x1, y1, &plotter);
+
     if (fix8_abs(x1 - x0) >= fix8_abs(y1 - y0)) {
-        draw_line_horizontal(pixels, width, height, x0, y0, x1, y1, color);
+        draw_line_horizontal(&plotter, pixels, width, height, color);
     } else {
-        draw_line_vertical(pixels, width, height, x0, y0, x1, y1, color);
+        draw_line_vertical(&plotter, pixels, width, height, color);
     }
 }
 
